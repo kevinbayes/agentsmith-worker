@@ -1,0 +1,7 @@
+target/
+.ai/bashrc
+.ai/sandbox/
+.ai/.docker-cache/
+.ai/desktop-data/
+.idea/
+*.iml

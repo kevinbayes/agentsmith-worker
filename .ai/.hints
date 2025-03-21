@@ -1,0 +1,21 @@
+This is a rust project.
+
+# Project structure
+
+The project directory structure is as follows:
+
+```
+<root>/
+  - config/ # Default configuration files
+  - examples/ #Rust examples folder for continuous testing
+  - src/ # Rust root source code
+    - common/ # Rust shared source code
+    - config/ # Rust source code to handle reading configuration files
+    - handler/ # Rust source code to handle http requests via axum
+    - model/ # Rust source code Domain Models as structs that can be persisted to datastores and used as Dtos internally.
+    - repository/ # Rust source code to interact with mysql and object storage
+    - service/ # Rust source code that holds the business logic and system logic
+    - stream/ # Rust source code to listen on for messages via streams or queues
+  - data/ #SQL database scripts
+  - Cargo.toml
+```

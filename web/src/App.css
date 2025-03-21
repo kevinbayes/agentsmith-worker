@@ -1,0 +1,27 @@
+#root {
+  min-width: 100dvw;
+  height: 100dvh;
+  min-height: 100dvh;
+  background-color: #000000;
+}
+
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  box-shadow: inset 0 0 6px #ccc;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover
+{
+  background: #aaa;
+  border-radius: 6px;
+}
