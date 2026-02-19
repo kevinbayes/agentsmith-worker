@@ -1,0 +1,59 @@
+[package]
+name = "agentsmith-remote-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+
+# Serialization & config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Async trait
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Signal (presage) - local patched copy (sender cert error made non-fatal)
+presage = { path = "presage-local/presage" }
+presage-store-sqlite = { path = "presage-local/presage-store-sqlite" }
+qr2term = "0.3"
+sqlx = { version = "0.8", features = ["runtime-tokio"] }
+
+# Slack
+slack-morphism = { version = "2", features = ["hyper"] }
+
+# TLS (rustls crypto provider — needed by slack-morphism's hyper-rustls)
+rustls = { version = "0.23", features = ["ring"] }
+
+# PTY
+portable-pty = "0.8"
+
+# ANSI stripping
+strip-ansi-escapes = "0.2"
+
+# HTTP client (for Anthropic API)
+reqwest = { version = "0.12", features = ["json"] }
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+[patch.crates-io]
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

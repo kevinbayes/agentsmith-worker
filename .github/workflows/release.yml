@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: agentsmith-remote-worker
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            tool: cargo
+            ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            tool: cross
+            ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            tool: cargo
+            ext: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Linux native (x86_64) ---
+      - name: Install system dependencies (Linux native)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libsqlite3-dev cmake clang
+
+      # --- Linux ARM64 via cross ---
+      - name: Install cross
+        if: matrix.tool == 'cross'
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # --- Windows ---
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Setup vcpkg and install SQLite (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install sqlite3:x64-windows
+          echo "SQLITE3_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          echo "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
+
+      # --- Cargo cache (native builds only) ---
+      - name: Cache cargo registry and target
+        if: matrix.tool == 'cargo'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-cargo-
+
+      # --- Build ---
+      - name: Build release (cargo)
+        if: matrix.tool == 'cargo'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build release (cross)
+        if: matrix.tool == 'cross'
+        run: cross build --release --target ${{ matrix.target }}
+
+      # --- Package ---
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ARCHIVE="${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -czf "${ARCHIVE}" -C "target/${{ matrix.target }}/release" "${{ env.BINARY_NAME }}"
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target\${{ matrix.target }}\release\${{ env.BINARY_NAME }}.exe" -DestinationPath $archive
+          echo "ARCHIVE=$archive" >> $env:GITHUB_ENV
+
+      # --- Upload artifact ---
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lR artifacts/
+
+      - name: Determine prerelease
+        id: prerelease
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == *-* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          prerelease: ${{ steps.prerelease.outputs.prerelease }}
+          generate_release_notes: true
