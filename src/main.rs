@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 use agentsmith_remote_worker::config::Config;
 use agentsmith_remote_worker::messaging::signal;
 use agentsmith_remote_worker::messaging::slack::SlackAdapter;
+use agentsmith_remote_worker::messaging::telegram::TelegramAdapter;
 use agentsmith_remote_worker::messaging::{IncomingMessage, OutgoingMessage};
 use agentsmith_remote_worker::router::Router;
 use agentsmith_remote_worker::shutdown;
@@ -127,9 +128,24 @@ async fn main() -> Result<()> {
         });
     }
 
+    if config.telegram.enabled {
+        tracing::info!("Starting Telegram adapter...");
+        let adapter = TelegramAdapter::new(config.telegram.clone());
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingMessage>(256);
+        outgoing_txs.push(outgoing_tx);
+
+        let incoming_tx = incoming_tx.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if let Err(e) = adapter.run(incoming_tx, outgoing_rx, cancel).await {
+                tracing::error!("Telegram adapter error: {}", e);
+            }
+        });
+    }
+
     if outgoing_txs.is_empty() {
         tracing::warn!("No messaging adapters enabled! Enable at least one in config.");
-        tracing::warn!("Set signal.enabled = true or slack.enabled = true");
+        tracing::warn!("Set signal.enabled = true, slack.enabled = true, or telegram.enabled = true");
     }
 
     // Start router

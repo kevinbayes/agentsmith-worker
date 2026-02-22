@@ -40,20 +40,27 @@ sqlx = { version = "0.8", features = ["runtime-tokio"] }
 # Slack
 slack-morphism = { version = "2", features = ["hyper"] }
 
+# Telegram
+teloxide = { version = "0.17", features = ["macros"] }
+
 # TLS (rustls crypto provider — needed by slack-morphism's hyper-rustls)
 rustls = { version = "0.23", features = ["ring"] }
 
 # PTY
-portable-pty = "0.8"
+portable-pty = "0.9"
 
 # ANSI stripping
 strip-ansi-escapes = "0.2"
 
 # HTTP client (for Anthropic API)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 
 # UUID
 uuid = { version = "1", features = ["v4"] }
+
+# Process monitoring
+sysinfo = "0.38"
+which = "8"
 
 [patch.crates-io]
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

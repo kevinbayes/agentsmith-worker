@@ -13,8 +13,18 @@ pub enum Command {
     Help,
     /// Show daemon status: /status
     Status,
+    /// Monitor tool installations and processes: /monitor
+    Monitor { action: MonitorAction },
     /// Regular text to route to the active session
     Text(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum MonitorAction {
+    /// Show tool installation and process status
+    Status,
+    /// Kill processes for a specific tool
+    Kill { tool: String },
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +76,22 @@ pub fn parse_command(input: &str) -> Command {
         }
         "/help" => Command::Help,
         "/status" => Command::Status,
+        "/monitor" => {
+            match parts.get(1).map(|s| s.to_lowercase()).as_deref() {
+                Some("kill") => {
+                    let tool = parts
+                        .get(2)
+                        .map(|s| s.to_lowercase())
+                        .unwrap_or_default();
+                    Command::Monitor {
+                        action: MonitorAction::Kill { tool },
+                    }
+                }
+                _ => Command::Monitor {
+                    action: MonitorAction::Status,
+                },
+            }
+        }
         _ => Command::Text(trimmed.to_string()),
     }
 }
@@ -75,11 +101,14 @@ pub fn help_text() -> &'static str {
 `/new claude` - Start a new Claude Code session
 `/new gemini` - Start a new Gemini CLI session
 `/new goose` - Start a new Goose session
+`/new zeroclaw` - Start a new ZeroClaw session
 `/list` - List all active sessions
 `/switch <id>` - Switch to a different session
 `/stop <id>` - Stop a specific session
 `/stop all` - Stop all sessions
 `/status` - Show daemon status
+`/monitor` - Show tool installation & running processes
+`/monitor kill openclaw` - Kill OpenClaw processes
 `/help` - Show this help message
 
 Any other text is sent to your active session."#

@@ -1,11 +1,13 @@
 pub mod signal;
 pub mod slack;
+pub mod telegram;
 
 /// Platform identifier for message routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
     Signal,
     Slack,
+    Telegram,
 }
 
 impl std::fmt::Display for Platform {
@@ -13,6 +15,7 @@ impl std::fmt::Display for Platform {
         match self {
             Platform::Signal => write!(f, "Signal"),
             Platform::Slack => write!(f, "Slack"),
+            Platform::Telegram => write!(f, "Telegram"),
         }
     }
 }

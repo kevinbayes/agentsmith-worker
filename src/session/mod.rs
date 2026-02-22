@@ -5,6 +5,8 @@ pub mod gemini_prompt;
 pub mod goose_prompt;
 pub mod output_buffer;
 pub mod pty;
+pub mod zeroclaw;
+pub mod zeroclaw_prompt;
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -19,6 +21,8 @@ use crate::session::claude_prompt::ClaudePromptSession;
 use crate::session::gemini::GeminiSession;
 use crate::session::gemini_prompt::GeminiPromptSession;
 use crate::session::goose_prompt::GoosePromptSession;
+use crate::session::zeroclaw::ZeroclawSession;
+use crate::session::zeroclaw_prompt::ZeroclawPromptSession;
 use crate::session::output_buffer::run_output_buffer;
 
 /// Unique ID for a session.
@@ -30,6 +34,7 @@ pub enum SessionTool {
     Claude,
     Gemini,
     Goose,
+    Zeroclaw,
 }
 
 impl std::fmt::Display for SessionTool {
@@ -38,6 +43,7 @@ impl std::fmt::Display for SessionTool {
             SessionTool::Claude => write!(f, "Claude"),
             SessionTool::Gemini => write!(f, "Gemini"),
             SessionTool::Goose => write!(f, "Goose"),
+            SessionTool::Zeroclaw => write!(f, "ZeroClaw"),
         }
     }
 }
@@ -48,6 +54,7 @@ impl SessionTool {
             "claude" => Some(SessionTool::Claude),
             "gemini" => Some(SessionTool::Gemini),
             "goose" => Some(SessionTool::Goose),
+            "zeroclaw" => Some(SessionTool::Zeroclaw),
             _ => None,
         }
     }
@@ -57,6 +64,7 @@ impl SessionTool {
             SessionTool::Claude => "Claude Code",
             SessionTool::Gemini => "Gemini CLI",
             SessionTool::Goose => "Goose",
+            SessionTool::Zeroclaw => "ZeroClaw",
         }
     }
 }
@@ -95,6 +103,8 @@ enum SessionInner {
     Gemini(GeminiSession),
     GeminiPrompt(GeminiPromptSession),
     GoosePrompt(GoosePromptSession),
+    Zeroclaw(ZeroclawSession),
+    ZeroclawPrompt(ZeroclawPromptSession),
 }
 
 struct SessionEntry {
@@ -114,6 +124,8 @@ impl SessionEntry {
             SessionInner::Gemini(s) => s.interaction_agent(),
             SessionInner::GeminiPrompt(s) => s.interaction_agent(),
             SessionInner::GoosePrompt(s) => s.interaction_agent(),
+            SessionInner::Zeroclaw(s) => s.interaction_agent(),
+            SessionInner::ZeroclawPrompt(s) => s.interaction_agent(),
         }
     }
 }
@@ -215,6 +227,25 @@ impl SessionManager {
                 session.start().await?;
                 SessionInner::GoosePrompt(session)
             }
+            SessionTool::Zeroclaw if self.config.zeroclaw.prompt_mode => {
+                // Prompt mode: no PTY, no interaction agent
+                let mut session =
+                    ZeroclawPromptSession::new(self.config.zeroclaw.clone(), working_dir, raw_output_tx);
+                session.start().await?;
+                SessionInner::ZeroclawPrompt(session)
+            }
+            SessionTool::Zeroclaw => {
+                let interaction = InteractionAgent::try_new(
+                    &self.config.interaction_agent,
+                    id,
+                    tool.tool_label(),
+                    self.feedback_tx.clone(),
+                );
+                let mut session =
+                    ZeroclawSession::new(self.config.zeroclaw.clone(), working_dir, raw_output_tx, interaction);
+                session.start().await?;
+                SessionInner::Zeroclaw(session)
+            }
         };
 
         let entry = SessionEntry {
@@ -256,6 +287,12 @@ impl SessionManager {
             SessionInner::GoosePrompt(session) => {
                 session.send_input(text).await?;
             }
+            SessionInner::Zeroclaw(session) => {
+                session.send_input(text)?;
+            }
+            SessionInner::ZeroclawPrompt(session) => {
+                session.send_input(text).await?;
+            }
         }
 
         Ok(())
@@ -286,6 +323,12 @@ impl SessionManager {
                 anyhow::bail!("Feedback responses are not supported in prompt mode");
             }
             SessionInner::GoosePrompt(_) => {
+                anyhow::bail!("Feedback responses are not supported in prompt mode");
+            }
+            SessionInner::Zeroclaw(session) => {
+                session.send_input(formatted_input)?;
+            }
+            SessionInner::ZeroclawPrompt(_) => {
                 anyhow::bail!("Feedback responses are not supported in prompt mode");
             }
         }
@@ -383,6 +426,11 @@ impl SessionManager {
                         }
                     }
                     SessionInner::GoosePrompt(ref s) => {
+                        if !s.is_running_sync() {
+                            entry.status = SessionStatus::Idle;
+                        }
+                    }
+                    SessionInner::ZeroclawPrompt(ref s) => {
                         if !s.is_running_sync() {
                             entry.status = SessionStatus::Idle;
                         }

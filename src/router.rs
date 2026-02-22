@@ -4,9 +4,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::interaction::FeedbackRequest;
-use crate::command::{self, Command, StopTarget};
+use crate::command::{self, Command, MonitorAction, StopTarget};
 use crate::config::Config;
 use crate::messaging::{IncomingMessage, OutgoingMessage, ThreadId};
+use crate::monitor::Monitor;
+use crate::reporter::Reporter;
 use crate::session::{SessionId, SessionManager, SessionTool};
 
 /// Tracks a pending feedback request awaiting user response.
@@ -28,6 +30,10 @@ pub struct Router {
     pending_feedback: HashMap<SessionId, PendingFeedback>,
     /// Timeout for feedback responses (5 minutes).
     feedback_timeout: Duration,
+    /// Tool installation and process monitor.
+    monitor: Monitor,
+    /// Periodic state reporter to control center.
+    reporter: Option<Reporter>,
 }
 
 impl Router {
@@ -38,6 +44,8 @@ impl Router {
         cancel: CancellationToken,
     ) -> Self {
         let session_mgr = SessionManager::new(config.clone());
+        let monitor = Monitor::from_config(&config);
+        let reporter = Reporter::new(&config.reporter);
         Self {
             config,
             session_mgr,
@@ -46,6 +54,8 @@ impl Router {
             cancel,
             pending_feedback: HashMap::new(),
             feedback_timeout: Duration::from_secs(300),
+            monitor,
+            reporter,
         }
     }
 
@@ -84,6 +94,10 @@ impl Router {
                     self.poll_feedback_requests().await;
                     // Check for feedback timeouts
                     self.check_feedback_timeouts().await;
+                    // Report state to control center
+                    if let Some(ref mut reporter) = self.reporter {
+                        reporter.maybe_report(&self.monitor, &self.session_mgr).await;
+                    }
                 }
             }
         }
@@ -117,6 +131,9 @@ impl Router {
             Command::Status => {
                 self.handle_status(&thread).await;
             }
+            Command::Monitor { action } => {
+                self.handle_monitor(&thread, action).await;
+            }
             Command::Text(text) => {
                 self.handle_text(&thread, &text).await;
             }
@@ -130,7 +147,7 @@ impl Router {
                 self.send_reply(
                     thread,
                     &format!(
-                        "Unknown tool '{}'. Use `/new claude`, `/new gemini`, or `/new goose`.",
+                        "Unknown tool '{}'. Use `/new claude`, `/new gemini`, `/new goose`, or `/new zeroclaw`.",
                         tool_name
                     ),
                 )
@@ -157,7 +174,7 @@ impl Router {
     async fn handle_list(&mut self, thread: &ThreadId) {
         let sessions = self.session_mgr.list_sessions();
         if sessions.is_empty() {
-            self.send_reply(thread, "No active sessions. Use `/new claude`, `/new gemini`, or `/new goose` to start one.")
+            self.send_reply(thread, "No active sessions. Use `/new claude`, `/new gemini`, `/new goose`, or `/new zeroclaw` to start one.")
                 .await;
             return;
         }
@@ -234,6 +251,57 @@ impl Router {
             reply.push_str("\nInteraction agent: disabled");
         }
         self.send_reply(thread, &reply).await;
+    }
+
+    async fn handle_monitor(&mut self, thread: &ThreadId, action: MonitorAction) {
+        match action {
+            MonitorAction::Status => {
+                let report = self.monitor.format_status();
+                self.send_reply(thread, &report).await;
+            }
+            MonitorAction::Kill { tool } => {
+                if tool == "openclaw" {
+                    let result = self.monitor.kill_openclaw();
+                    let mut reply = "*Kill OpenClaw:*".to_string();
+                    if result.killed.is_empty() && result.failed.is_empty() {
+                        reply.push_str("\nNo OpenClaw processes found.");
+                    } else {
+                        if !result.killed.is_empty() {
+                            reply.push_str(&format!(
+                                "\nKilled PIDs: {}",
+                                result
+                                    .killed
+                                    .iter()
+                                    .map(|p| p.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                        if !result.failed.is_empty() {
+                            reply.push_str(&format!(
+                                "\nFailed to kill PIDs: {}",
+                                result
+                                    .failed
+                                    .iter()
+                                    .map(|p| p.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                    }
+                    self.send_reply(thread, &reply).await;
+                } else {
+                    self.send_reply(
+                        thread,
+                        &format!(
+                            "Kill is only supported for `openclaw`. Got: '{}'",
+                            tool
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
     }
 
     async fn handle_text(&mut self, thread: &ThreadId, text: &str) {

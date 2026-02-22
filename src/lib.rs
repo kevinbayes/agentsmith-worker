@@ -4,6 +4,8 @@ pub mod config;
 pub mod error;
 pub mod llm;
 pub mod messaging;
+pub mod monitor;
+pub mod reporter;
 pub mod router;
 pub mod session;
 pub mod shutdown;

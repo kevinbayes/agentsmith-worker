@@ -12,6 +12,8 @@ pub struct Config {
     #[serde(default)]
     pub slack: SlackConfig,
     #[serde(default)]
+    pub telegram: TelegramConfig,
+    #[serde(default)]
     pub session_defaults: SessionDefaultsConfig,
     #[serde(default)]
     pub claude: ClaudeConfig,
@@ -20,7 +22,11 @@ pub struct Config {
     #[serde(default)]
     pub goose: GooseConfig,
     #[serde(default)]
+    pub zeroclaw: ZeroclawConfig,
+    #[serde(default)]
     pub interaction_agent: InteractionAgentConfig,
+    #[serde(default)]
+    pub reporter: ReporterConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -84,6 +90,32 @@ impl Default for SlackConfig {
             enabled: false,
             app_token: None,
             bot_token: None,
+            dm_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TelegramConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bot token from @BotFather
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    /// Optional: restrict to a single authorized Telegram user ID
+    #[serde(default)]
+    pub authorized_user: Option<i64>,
+    /// Only respond to direct messages (ignore group chats)
+    #[serde(default = "default_true")]
+    pub dm_only: bool,
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: None,
+            authorized_user: None,
             dm_only: true,
         }
     }
@@ -176,6 +208,26 @@ impl Default for GooseConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct ZeroclawConfig {
+    #[serde(default = "default_zeroclaw_binary")]
+    pub binary: String,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    #[serde(default)]
+    pub prompt_mode: bool,
+}
+
+impl Default for ZeroclawConfig {
+    fn default() -> Self {
+        Self {
+            binary: default_zeroclaw_binary(),
+            extra_args: Vec::new(),
+            prompt_mode: false,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct InteractionAgentConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -193,6 +245,42 @@ impl Default for InteractionAgentConfig {
             quiet_timeout_ms: default_quiet_timeout(),
         }
     }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ReporterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub token_url: String,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default)]
+    pub worker_name: Option<String>,
+    #[serde(default = "default_report_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for ReporterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            token_url: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            worker_name: None,
+            interval_secs: default_report_interval_secs(),
+        }
+    }
+}
+
+fn default_report_interval_secs() -> u64 {
+    30
 }
 
 fn default_working_dir() -> PathBuf {
@@ -243,6 +331,10 @@ fn default_goose_binary() -> String {
     "goose".to_string()
 }
 
+fn default_zeroclaw_binary() -> String {
+    "zeroclaw".to_string()
+}
+
 fn default_quiet_timeout() -> u64 {
     3000
 }
@@ -268,11 +360,14 @@ impl Config {
                 daemon: DaemonConfig::default(),
                 signal: SignalConfig::default(),
                 slack: SlackConfig::default(),
+                telegram: TelegramConfig::default(),
                 session_defaults: SessionDefaultsConfig::default(),
                 claude: ClaudeConfig::default(),
                 gemini: GeminiConfig::default(),
                 goose: GooseConfig::default(),
+                zeroclaw: ZeroclawConfig::default(),
                 interaction_agent: InteractionAgentConfig::default(),
+                reporter: ReporterConfig::default(),
             }
         };
 
@@ -315,6 +410,18 @@ impl Config {
             self.slack.bot_token = Some(val);
         }
 
+        if let Ok(val) = std::env::var("AGENTSMITH_TELEGRAM_ENABLED") {
+            self.telegram.enabled = val.parse().unwrap_or(false);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_TELEGRAM_BOT_TOKEN") {
+            self.telegram.bot_token = Some(val);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_TELEGRAM_AUTHORIZED_USER") {
+            if let Ok(id) = val.parse() {
+                self.telegram.authorized_user = Some(id);
+            }
+        }
+
         // Interaction agent overrides
         if let Ok(val) = std::env::var("AGENTSMITH_INTERACTION_AGENT_ENABLED") {
             self.interaction_agent.enabled = val.parse().unwrap_or(true);
@@ -353,6 +460,39 @@ impl Config {
         // Goose overrides
         if let Ok(val) = std::env::var("AGENTSMITH_GOOSE_BINARY") {
             self.goose.binary = val;
+        }
+
+        // ZeroClaw overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_ZEROCLAW_BINARY") {
+            self.zeroclaw.binary = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_ZEROCLAW_PROMPT_MODE") {
+            self.zeroclaw.prompt_mode = val.parse().unwrap_or(false);
+        }
+
+        // Reporter overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_ENABLED") {
+            self.reporter.enabled = val.parse().unwrap_or(false);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_ENDPOINT") {
+            self.reporter.endpoint = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_TOKEN_URL") {
+            self.reporter.token_url = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_CLIENT_ID") {
+            self.reporter.client_id = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_CLIENT_SECRET") {
+            self.reporter.client_secret = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_WORKER_NAME") {
+            self.reporter.worker_name = Some(val);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_INTERVAL_SECS") {
+            if let Ok(secs) = val.parse() {
+                self.reporter.interval_secs = secs;
+            }
         }
 
         // Signal db_path default if not set

@@ -106,64 +106,113 @@ impl SignalAdapter {
     ) -> Result<()> {
         tracing::info!("Signal adapter starting...");
 
-        let messages = self.manager.receive_messages().await?;
-        pin_mut!(messages);
-
-        // Wait for initial queue drain before allowing sends.
-        // presage recommends processing all queued messages first so
-        // sessions and profile keys are up to date.
-        let mut queue_synced = false;
+        let mut consecutive_failures: u32 = 0;
 
         loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    tracing::info!("Signal adapter shutting down");
-                    break;
-                }
-                msg = messages.next() => {
-                    match msg {
-                        Some(Received::Content(content)) => {
-                            if let Some(incoming) = self.process_incoming(&content) {
-                                let _ = incoming_tx.send(incoming).await;
-                            }
-                        }
-                        Some(Received::QueueEmpty) => {
-                            tracing::info!("Signal message queue synced");
-                            queue_synced = true;
-                        }
-                        Some(Received::Contacts) => {
-                            tracing::debug!("Signal contacts synced");
-                        }
-                        None => {
-                            tracing::warn!("Signal message stream ended");
-                            break;
-                        }
+            // --- Check cancellation before (re)connecting ---
+            if cancel.is_cancelled() {
+                tracing::info!("Signal adapter shutting down (before reconnect)");
+                break;
+            }
+
+            // --- Exponential backoff on consecutive failures ---
+            if consecutive_failures > 0 {
+                let backoff_secs =
+                    std::cmp::min(1u64.checked_shl(consecutive_failures - 1).unwrap_or(300), 300);
+                tracing::info!(
+                    consecutive_failures,
+                    backoff_secs,
+                    "Signal adapter waiting before reconnect"
+                );
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Signal adapter shutting down (during backoff)");
+                        break;
                     }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
                 }
-                outgoing = outgoing_rx.recv() => {
-                    match outgoing {
-                        Some(msg) => {
-                            if msg.thread.platform != Platform::Signal {
-                                continue;
+            }
+
+            // --- Establish message stream ---
+            let messages = match self.manager.receive_messages().await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    tracing::error!(
+                        consecutive_failures,
+                        error = %e,
+                        "Failed to connect Signal message stream"
+                    );
+                    continue;
+                }
+            };
+            pin_mut!(messages);
+
+            consecutive_failures = 0;
+            let mut queue_synced = false;
+            tracing::info!("Signal message stream connected");
+
+            // --- Inner loop: process messages until stream ends ---
+            let should_stop = loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Signal adapter shutting down");
+                        break true;
+                    }
+                    msg = messages.next() => {
+                        match msg {
+                            Some(Received::Content(content)) => {
+                                if let Some(incoming) = self.process_incoming(&content) {
+                                    let _ = incoming_tx.send(incoming).await;
+                                }
                             }
-                            if !queue_synced {
-                                tracing::debug!("Deferring send until queue is synced");
-                                // Send it back to process after queue syncs
-                                // For now just warn and try anyway
+                            Some(Received::QueueEmpty) => {
+                                tracing::info!("Signal message queue synced");
+                                queue_synced = true;
+                            }
+                            Some(Received::Contacts) => {
+                                tracing::debug!("Signal contacts synced");
+                            }
+                            None => {
                                 tracing::warn!(
-                                    "Sending before queue sync — session state may not be current"
+                                    "Signal message stream ended, will reconnect"
                                 );
-                            }
-                            if let Err(e) = self.send_message(&msg).await {
-                                tracing::error!("Failed to send Signal message: {:?}", e);
+                                break false;
                             }
                         }
-                        None => {
-                            tracing::info!("Outgoing channel closed");
-                            break;
+                    }
+                    outgoing = outgoing_rx.recv() => {
+                        match outgoing {
+                            Some(msg) => {
+                                if msg.thread.platform != Platform::Signal {
+                                    continue;
+                                }
+                                if !queue_synced {
+                                    tracing::debug!(
+                                        "Deferring send until queue is synced"
+                                    );
+                                    tracing::warn!(
+                                        "Sending before queue sync — \
+                                         session state may not be current"
+                                    );
+                                }
+                                if let Err(e) = self.send_message(&msg).await {
+                                    tracing::error!(
+                                        "Failed to send Signal message: {:?}", e
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::info!("Outgoing channel closed");
+                                break true;
+                            }
                         }
                     }
                 }
+            };
+
+            if should_stop {
+                break;
             }
         }
 
