@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentSmith Remote Worker</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #1a1b26; --bg2: #24283b; --bg3: #2f3348;
+    --fg: #c0caf5; --fg2: #a9b1d6; --dim: #565f89;
+    --accent: #7aa2f7; --green: #9ece6a; --red: #f7768e;
+    --yellow: #e0af68; --border: #3b4261;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--fg); font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; font-size: 14px; }
+  body { display: flex; flex-direction: column; }
+
+  /* Top bar */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .topbar h1 { font-size: 15px; color: var(--accent); font-weight: 600; }
+  .topbar .meta { font-size: 12px; color: var(--dim); }
+  .topbar .meta span { margin-left: 16px; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .status-dot.connected { background: var(--green); }
+  .status-dot.disconnected { background: var(--red); }
+
+  /* Main layout */
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  /* Dashboard panel */
+  .dashboard { width: 340px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; background: var(--bg); }
+  .dashboard h2 { font-size: 12px; text-transform: uppercase; color: var(--dim); letter-spacing: 1px; margin-bottom: 8px; }
+  .dashboard h2:not(:first-child) { margin-top: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--dim); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 4px 8px; border-bottom: 1px solid var(--bg2); color: var(--fg2); }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+  .badge-running { background: rgba(158,206,106,0.15); color: var(--green); }
+  .badge-idle { background: rgba(122,162,247,0.15); color: var(--accent); }
+  .badge-awaiting { background: rgba(224,175,104,0.15); color: var(--yellow); }
+  .badge-stopped { background: rgba(247,118,142,0.15); color: var(--red); }
+  .badge-yes { background: rgba(158,206,106,0.15); color: var(--green); }
+  .badge-no { background: rgba(247,118,142,0.15); color: var(--red); }
+  .empty { color: var(--dim); font-style: italic; font-size: 13px; }
+
+  /* Chat panel */
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .messages { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .msg { margin-bottom: 10px; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
+  .msg.user { color: var(--accent); }
+  .msg.user::before { content: '> '; color: var(--dim); }
+  .msg.system { color: var(--fg2); padding-left: 4px; }
+  .msg.info { color: var(--dim); font-style: italic; }
+
+  /* Input */
+  .input-area { display: flex; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg2); flex-shrink: 0; }
+  .input-area input { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; color: var(--fg); font-family: inherit; font-size: 14px; outline: none; }
+  .input-area input:focus { border-color: var(--accent); }
+  .input-area button { margin-left: 8px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; padding: 8px 16px; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 13px; }
+  .input-area button:hover { opacity: 0.9; }
+  .input-area button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .main { flex-direction: column; }
+    .dashboard { width: 100%; max-height: 200px; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>AgentSmith Remote Worker</h1>
+  <div class="meta">
+    <span><span class="status-dot disconnected" id="ws-dot"></span><span id="ws-status">Disconnected</span></span>
+    <span id="meta-version"></span>
+    <span id="meta-uptime"></span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="dashboard">
+    <h2>Sessions</h2>
+    <div id="sessions-table"><span class="empty">No sessions</span></div>
+
+    <h2>Agents</h2>
+    <div id="agents-table"><span class="empty">Loading...</span></div>
+  </div>
+
+  <div class="chat">
+    <div class="messages" id="messages">
+      <div class="msg info">Welcome to AgentSmith. Type a message or use /help for commands.</div>
+    </div>
+    <div class="input-area">
+      <input type="text" id="input" placeholder="Type a message or command..." autocomplete="off" />
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  let ws = null;
+  let reconnectTimer = null;
+
+  const messagesEl = document.getElementById('messages');
+  const inputEl = document.getElementById('input');
+  const sendBtn = document.getElementById('send-btn');
+  const wsDot = document.getElementById('ws-dot');
+  const wsStatus = document.getElementById('ws-status');
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = function() {
+      wsDot.className = 'status-dot connected';
+      wsStatus.textContent = 'Connected';
+      sendBtn.disabled = false;
+      addMessage('Connected to AgentSmith', 'info');
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'message') {
+          addMessage(data.text, 'system');
+        }
+      } catch(err) {
+        addMessage(e.data, 'system');
+      }
+    };
+
+    ws.onclose = function() {
+      wsDot.className = 'status-dot disconnected';
+      wsStatus.textContent = 'Disconnected';
+      sendBtn.disabled = true;
+      addMessage('Disconnected. Reconnecting...', 'info');
+      scheduleReconnect();
+    };
+
+    ws.onerror = function() {
+      ws.close();
+    };
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function() {
+      reconnectTimer = null;
+      connect();
+    }, 2000);
+  }
+
+  window.sendMessage = function() {
+    const text = inputEl.value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ text: text }));
+    addMessage(text, 'user');
+    inputEl.value = '';
+    inputEl.focus();
+  };
+
+  inputEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      window.sendMessage();
+    }
+  });
+
+  function addMessage(text, cls) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + cls;
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // Dashboard polling
+  function statusBadge(status) {
+    const s = status.toLowerCase();
+    let cls = 'badge-idle';
+    if (s === 'running') cls = 'badge-running';
+    else if (s === 'awaiting input') cls = 'badge-awaiting';
+    else if (s === 'stopped') cls = 'badge-stopped';
+    return '<span class="badge ' + cls + '">' + status + '</span>';
+  }
+
+  function refreshDashboard() {
+    fetch('/api/status')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Meta
+        if (data.version) {
+          document.getElementById('meta-version').textContent = 'v' + data.version;
+        }
+        if (data.uptime_secs !== undefined) {
+          const m = Math.floor(data.uptime_secs / 60);
+          const h = Math.floor(m / 60);
+          document.getElementById('meta-uptime').textContent =
+            'Uptime: ' + (h > 0 ? h + 'h ' : '') + (m % 60) + 'm';
+        }
+
+        // Sessions
+        const sessEl = document.getElementById('sessions-table');
+        if (!data.sessions || data.sessions.length === 0) {
+          sessEl.innerHTML = '<span class="empty">No sessions</span>';
+        } else {
+          let html = '<table><tr><th>#</th><th>Tool</th><th>Status</th></tr>';
+          data.sessions.forEach(function(s) {
+            html += '<tr><td>' + s.id + '</td><td>' + s.tool + '</td><td>' + statusBadge(s.status) + '</td></tr>';
+          });
+          html += '</table>';
+          sessEl.innerHTML = html;
+        }
+
+        // Agents
+        const agEl = document.getElementById('agents-table');
+        if (!data.agents || data.agents.length === 0) {
+          agEl.innerHTML = '<span class="empty">No agents configured</span>';
+        } else {
+          let html = '<table><tr><th>Name</th><th>Installed</th><th>Running</th></tr>';
+          data.agents.forEach(function(a) {
+            const instBadge = a.installed
+              ? '<span class="badge badge-yes">Yes</span>'
+              : '<span class="badge badge-no">No</span>';
+            const ver = a.version ? ' (' + a.version + ')' : '';
+            html += '<tr><td>' + a.name + ver + '</td><td>' + instBadge + '</td><td>' + a.running_count + '</td></tr>';
+          });
+          html += '</table>';
+          agEl.innerHTML = html;
+        }
+      })
+      .catch(function() {});
+  }
+
+  // Init
+  connect();
+  refreshDashboard();
+  setInterval(refreshDashboard, 5000);
+})();
+</script>
+</body>
+</html>
