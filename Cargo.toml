@@ -55,6 +55,10 @@ strip-ansi-escapes = "0.2"
 # HTTP client (for Anthropic API)
 reqwest = { version = "0.13", features = ["json", "form"] }
 
+# Web server
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
 # UUID
 uuid = { version = "1", features = ["v4"] }
 

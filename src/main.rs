@@ -5,10 +5,14 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 use agentsmith_remote_worker::config::Config;
 use agentsmith_remote_worker::messaging::signal;
 use agentsmith_remote_worker::messaging::slack::SlackAdapter;
 use agentsmith_remote_worker::messaging::telegram::TelegramAdapter;
+use agentsmith_remote_worker::messaging::web::{StatusSnapshot, WebAdapter};
 use agentsmith_remote_worker::messaging::{IncomingMessage, OutgoingMessage};
 use agentsmith_remote_worker::router::Router;
 use agentsmith_remote_worker::shutdown;
@@ -143,13 +147,35 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Web adapter
+    let status_snapshot = if config.web.enabled {
+        Some(Arc::new(RwLock::new(StatusSnapshot::default())))
+    } else {
+        None
+    };
+
+    if config.web.enabled {
+        tracing::info!("Starting Web adapter...");
+        let adapter = WebAdapter::new(config.web.clone(), status_snapshot.clone().unwrap());
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingMessage>(256);
+        outgoing_txs.push(outgoing_tx);
+
+        let incoming_tx = incoming_tx.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if let Err(e) = adapter.run(incoming_tx, outgoing_rx, cancel).await {
+                tracing::error!("Web adapter error: {}", e);
+            }
+        });
+    }
+
     if outgoing_txs.is_empty() {
         tracing::warn!("No messaging adapters enabled! Enable at least one in config.");
-        tracing::warn!("Set signal.enabled = true, slack.enabled = true, or telegram.enabled = true");
+        tracing::warn!("Set signal.enabled = true, slack.enabled = true, telegram.enabled = true, or web.enabled = true");
     }
 
     // Start router
-    let router = Router::new(config, incoming_rx, outgoing_txs, cancel.clone());
+    let router = Router::new(config, incoming_rx, outgoing_txs, cancel.clone(), status_snapshot);
 
     tracing::info!("AgentSmith Remote Worker is running. Press Ctrl+C to stop.");
     router.run().await?;

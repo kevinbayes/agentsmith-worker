@@ -1,15 +1,15 @@
 # AgentSmith Remote Worker
 
-A daemon that bridges messaging platforms (Signal, Slack) with AI CLI tools (Claude Code, Gemini CLI, Goose), allowing you to give tasks remotely and interact with AI sessions via chat messages.
+A daemon that bridges messaging platforms (Signal, Slack, Telegram) and a local web dashboard with AI CLI tools (Claude Code, Gemini CLI, Goose, ZeroClaw), allowing you to give tasks remotely and interact with AI sessions via chat messages.
 
 ## How It Works
 
 ```
-You (Signal/Slack) --> AgentSmith Daemon --> Claude Code / Gemini CLI / Goose
-                   <-- AI responses    <--
+You (Signal/Slack/Telegram/Web) --> AgentSmith Daemon --> Claude Code / Gemini CLI / Goose / ZeroClaw
+                                <-- AI responses    <--
 ```
 
-Send a message from your phone or Slack workspace, and the daemon routes it to an AI session running on your machine. Responses stream back to the same conversation thread.
+Send a message from your phone, Slack workspace, or the built-in web dashboard, and the daemon routes it to an AI session running on your machine. Responses stream back to the same conversation thread.
 
 ## Quick Install
 
@@ -147,6 +147,11 @@ working_dir = "/home/user/projects"   # Directory where AI sessions run
 log_level = "info"                     # trace, debug, info, warn, error
 data_dir = "/home/user/.agentsmith"    # Daemon data storage
 
+[web]
+enabled = true                         # Browser-based dashboard + chat UI
+host = "127.0.0.1"                     # Bind address (localhost only by default)
+port = 3000                            # HTTP port
+
 [signal]
 enabled = true
 device_name = "agentsmith-worker"
@@ -229,6 +234,41 @@ export GROQ_API_KEY="gsk_..."
 
 Without the interaction agent, permission prompts and other interactive questions from the CLI tools will not be forwarded to your chat -- you would need to handle them manually.
 
+### Reporting API
+
+The reporter periodically sends the worker's state (active sessions, installed tools, running processes) to a central control plane over HTTPS. Authentication uses the **OAuth 2.0 client credentials** grant — the worker exchanges a `client_id` and `client_secret` for a bearer token at the configured OIDC token endpoint, then POSTs a JSON state report to the reporting endpoint. Tokens are cached and refreshed automatically before they expire.
+
+```toml
+[reporter]
+enabled = true
+endpoint = "https://control.example.com/api/v1/workers/state"   # Where state reports are POSTed
+token_url = "https://auth.example.com/oauth/token"               # OIDC token endpoint
+client_id = "agentsmith-worker-01"                               # OAuth 2.0 client ID
+client_secret = "super-secret-value"                             # OAuth 2.0 client secret
+worker_name = "my-dev-machine"                                   # Friendly name (defaults to hostname)
+interval_secs = 30                                               # How often to report (seconds)
+```
+
+Or use environment variables:
+
+```bash
+export AGENTSMITH_REPORTER_ENABLED=true
+export AGENTSMITH_REPORTER_ENDPOINT="https://control.example.com/api/v1/workers/state"
+export AGENTSMITH_REPORTER_TOKEN_URL="https://auth.example.com/oauth/token"
+export AGENTSMITH_REPORTER_CLIENT_ID="agentsmith-worker-01"
+export AGENTSMITH_REPORTER_CLIENT_SECRET="super-secret-value"
+export AGENTSMITH_REPORTER_WORKER_NAME="my-dev-machine"
+export AGENTSMITH_REPORTER_INTERVAL_SECS=30
+```
+
+**State report payload** — each report is a JSON object containing:
+- `worker` — hostname, worker name, and daemon version
+- `agents` — installed CLI tools with version info and running process details
+- `sessions` — active AI sessions with their tool type and status
+- `timestamp` — UTC timestamp of the report
+
+The reporter is **disabled by default**. All four fields (`endpoint`, `token_url`, `client_id`, `client_secret`) are required when enabled; if any are missing the reporter will log a warning and stay disabled.
+
 ### Environment Variable Overrides
 
 Every config value can be overridden with environment variables using the pattern `AGENTSMITH_<SECTION>_<KEY>`:
@@ -245,6 +285,71 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
 ## Setup
+
+### Web Dashboard (Quickstart)
+
+The fastest way to get started -- no external accounts or API keys needed. The web dashboard gives you a browser-based chat UI and a live status panel showing sessions, installed tools, and running processes.
+
+#### 1. Enable the web adapter
+
+Create a minimal `config.toml`:
+
+```toml
+[web]
+enabled = true
+host = "127.0.0.1"   # Bind address (default: localhost only)
+port = 3000           # Default port
+
+[session_defaults]
+default_tool = "claude"   # or "gemini", "goose", "zeroclaw"
+
+[claude]
+binary = "claude"
+```
+
+Or skip the config file entirely and use environment variables:
+
+```bash
+export AGENTSMITH_WEB_ENABLED=true
+```
+
+#### 2. Start the daemon
+
+```bash
+# From the repo
+cargo run --release -- --config config.toml
+
+# Or with the installed binary
+agentsmith-remote-worker --config config.toml
+```
+
+You should see:
+
+```
+AgentSmith Remote Worker starting...
+Starting Web adapter...
+Web UI available at http://127.0.0.1:3000
+AgentSmith Remote Worker is running. Press Ctrl+C to stop.
+```
+
+#### 3. Open the dashboard
+
+Navigate to **http://127.0.0.1:3000** in your browser. You'll see:
+
+- **Left panel** -- live dashboard showing active sessions and installed AI tools
+- **Right panel** -- chat interface for interacting with AI sessions
+
+Type a message and hit Enter. A session is auto-created with your default tool. Use `/help` to see all commands, `/new gemini` to start a Gemini session, `/list` to see active sessions, etc.
+
+Each browser tab gets its own independent connection. To view the same session from multiple tabs, use `/switch <id>` in each tab.
+
+#### Configuration via environment variables
+
+```bash
+export AGENTSMITH_WEB_ENABLED=true
+export AGENTSMITH_WEB_HOST="0.0.0.0"    # Listen on all interfaces (use with caution)
+export AGENTSMITH_WEB_PORT=8080          # Custom port
+```
 
 ### Signal Setup
 
@@ -476,7 +581,7 @@ By default `dm_only = true` restricts the bot to direct messages only. If you wa
 
 ## Usage
 
-Once the daemon is running, send messages from Signal or Slack:
+Once the daemon is running, send messages from the web dashboard, Signal, Slack, or Telegram:
 
 ### Chat Commands
 
@@ -485,6 +590,7 @@ Once the daemon is running, send messages from Signal or Slack:
 | `/new claude` | Start a new Claude Code session |
 | `/new gemini` | Start a new Gemini CLI session |
 | `/new goose` | Start a new Goose session |
+| `/new zeroclaw` | Start a new ZeroClaw session |
 | `/list` | List all active sessions |
 | `/switch <id>` | Switch to a different session |
 | `/stop <id>` | Stop a specific session |
@@ -560,10 +666,11 @@ sudo snap install agentsmith-worker --devmode
 ## Architecture
 
 ```
-Signal ──┐                              ┌── Claude Code (-p mode)
-         ├── incoming_tx ── Router ──┤── Gemini CLI (PTY mode)
-Slack  ──┘                              └── Goose (prompt mode)
-         ◄── outgoing_tx ◄─ output ◄─┘
+Web      ──┐                              ┌── Claude Code
+Signal   ──┤                              ├── Gemini CLI
+Slack    ──┼── incoming_tx ── Router ──┼── Goose
+Telegram ──┘                              └── ZeroClaw
+           ◄── outgoing_tx ◄─ output ◄─┘
 ```
 
 - **Router**: Central message dispatcher, owns the `SessionManager`

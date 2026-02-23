@@ -11,6 +11,12 @@ use crate::session::{SessionManager, SessionInfo};
 // ── Payload types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
+struct CommandEnvelope {
+    command: &'static str,
+    state_report: StateReport,
+}
+
+#[derive(Debug, Serialize)]
 struct StateReport {
     worker: WorkerIdentity,
     agents: Vec<AgentReport>,
@@ -224,7 +230,7 @@ impl Reporter {
         let endpoint = self.endpoint.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = Self::send_report(client, &endpoint, &token, &report).await {
+            if let Err(e) = Self::send_report(client, &endpoint, &token, report).await {
                 tracing::warn!("Failed to send state report: {}", e);
             }
         });
@@ -250,12 +256,17 @@ impl Reporter {
         client: reqwest::Client,
         endpoint: &str,
         token: &str,
-        report: &StateReport,
+        report: StateReport,
     ) -> anyhow::Result<()> {
+        let envelope = CommandEnvelope {
+            command: "state_report",
+            state_report: report,
+        };
+
         let resp = client
             .post(endpoint)
             .bearer_auth(token)
-            .json(report)
+            .json(&envelope)
             .send()
             .await?;
 

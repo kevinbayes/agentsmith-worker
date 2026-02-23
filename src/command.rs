@@ -15,6 +15,14 @@ pub enum Command {
     Status,
     /// Monitor tool installations and processes: /monitor
     Monitor { action: MonitorAction },
+    /// Enter agent mode: /agent
+    Agent,
+    /// Return to session mode: /session
+    Session,
+    /// Alias for /session: /back
+    Back,
+    /// Clear agent conversation context: /clear
+    Clear,
     /// Regular text to route to the active session
     Text(String),
 }
@@ -74,6 +82,10 @@ pub fn parse_command(input: &str) -> Command {
             };
             Command::Stop { target }
         }
+        "/agent" => Command::Agent,
+        "/session" => Command::Session,
+        "/back" => Command::Back,
+        "/clear" => Command::Clear,
         "/help" => Command::Help,
         "/status" => Command::Status,
         "/monitor" => {
@@ -109,7 +121,12 @@ pub fn help_text() -> &'static str {
 `/status` - Show daemon status
 `/monitor` - Show tool installation & running processes
 `/monitor kill openclaw` - Kill OpenClaw processes
+`/agent` - Enter agent mode (AI assistant)
+`/session` - Return to session mode (direct passthrough)
+`/back` - Alias for /session
+`/clear` - Clear agent conversation context
 `/help` - Show this help message
 
-Any other text is sent to your active session."#
+In *session mode* (default), text goes directly to your active CLI session.
+In *agent mode*, text goes to the AI assistant which can chat, delegate tasks, check status, and more."#
 }

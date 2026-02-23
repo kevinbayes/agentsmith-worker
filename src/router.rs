@@ -1,11 +1,15 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::interaction::FeedbackRequest;
+use crate::agent::orchestrator::AgentResponse;
+use crate::agent::{AgentManager, ThreadMode};
 use crate::command::{self, Command, MonitorAction, StopTarget};
 use crate::config::Config;
+use crate::messaging::web::{AgentSnapshotItem, SessionSnapshotItem, StatusSnapshot};
 use crate::messaging::{IncomingMessage, OutgoingMessage, ThreadId};
 use crate::monitor::Monitor;
 use crate::reporter::Reporter;
@@ -34,6 +38,14 @@ pub struct Router {
     monitor: Monitor,
     /// Periodic state reporter to control center.
     reporter: Option<Reporter>,
+    /// Shared status snapshot for the web UI.
+    status_snapshot: Option<Arc<RwLock<StatusSnapshot>>>,
+    /// Instant the router started, for uptime tracking.
+    started_at: Instant,
+    /// Per-thread agent manager (None if agent mode is disabled/unconfigured).
+    agent_mgr: Option<AgentManager>,
+    /// Per-thread mode: Session (default) or Agent.
+    thread_modes: HashMap<ThreadId, ThreadMode>,
 }
 
 impl Router {
@@ -42,10 +54,12 @@ impl Router {
         incoming_rx: mpsc::Receiver<IncomingMessage>,
         outgoing_txs: Vec<mpsc::Sender<OutgoingMessage>>,
         cancel: CancellationToken,
+        status_snapshot: Option<Arc<RwLock<StatusSnapshot>>>,
     ) -> Self {
         let session_mgr = SessionManager::new(config.clone());
         let monitor = Monitor::from_config(&config);
         let reporter = Reporter::new(&config.reporter);
+        let agent_mgr = AgentManager::try_new(&config.agent);
         Self {
             config,
             session_mgr,
@@ -56,7 +70,26 @@ impl Router {
             feedback_timeout: Duration::from_secs(300),
             monitor,
             reporter,
+            status_snapshot,
+            started_at: Instant::now(),
+            agent_mgr,
+            thread_modes: HashMap::new(),
         }
+    }
+
+    /// Get the current mode for a thread. Defaults to Session unless
+    /// auto_agent_mode is enabled and the agent is available.
+    fn thread_mode(&self, thread: &ThreadId) -> ThreadMode {
+        if let Some(&mode) = self.thread_modes.get(thread) {
+            return mode;
+        }
+        // Default: check if auto_agent_mode is configured
+        if let Some(ref mgr) = self.agent_mgr {
+            if mgr.auto_agent_mode() {
+                return ThreadMode::Agent;
+            }
+        }
+        ThreadMode::Session
     }
 
     /// Run the router event loop.
@@ -98,6 +131,32 @@ impl Router {
                     if let Some(ref mut reporter) = self.reporter {
                         reporter.maybe_report(&self.monitor, &self.session_mgr).await;
                     }
+                    // Update web UI status snapshot
+                    if let Some(ref snapshot) = self.status_snapshot {
+                        let sessions = self.session_mgr.list_sessions();
+                        let tools = self.monitor.status();
+                        let mut snap = snapshot.write().await;
+                        snap.sessions = sessions
+                            .iter()
+                            .map(|s| SessionSnapshotItem {
+                                id: s.id,
+                                tool: s.tool.to_string(),
+                                status: s.status.to_string(),
+                            })
+                            .collect();
+                        snap.agents = tools
+                            .iter()
+                            .map(|t| AgentSnapshotItem {
+                                name: t.name.clone(),
+                                binary: t.binary.clone(),
+                                installed: t.installed,
+                                version: t.version.clone(),
+                                running_count: t.running_instances.len(),
+                            })
+                            .collect();
+                        snap.version = env!("CARGO_PKG_VERSION").to_string();
+                        snap.uptime_secs = self.started_at.elapsed().as_secs();
+                    }
                 }
             }
         }
@@ -113,6 +172,17 @@ impl Router {
         tracing::debug!("Received from {}: {:?}", thread, cmd);
 
         match cmd {
+            // New agent mode commands
+            Command::Agent => {
+                self.enter_agent_mode(&thread).await;
+            }
+            Command::Session | Command::Back => {
+                self.enter_session_mode(&thread).await;
+            }
+            Command::Clear => {
+                self.handle_clear(&thread).await;
+            }
+            // Existing slash commands work in both modes
             Command::New { tool } => {
                 self.handle_new_session(&thread, &tool).await;
             }
@@ -134,8 +204,101 @@ impl Router {
             Command::Monitor { action } => {
                 self.handle_monitor(&thread, action).await;
             }
+            // Text routing depends on mode
             Command::Text(text) => {
-                self.handle_text(&thread, &text).await;
+                match self.thread_mode(&thread) {
+                    ThreadMode::Session => {
+                        self.handle_text(&thread, &text).await;
+                    }
+                    ThreadMode::Agent => {
+                        self.handle_agent_text(&thread, &text).await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Enter agent mode for a thread.
+    async fn enter_agent_mode(&mut self, thread: &ThreadId) {
+        if self.agent_mgr.is_none() {
+            self.send_reply(
+                thread,
+                "Agent mode is not available. Check that `[agent]` is configured with a valid LLM provider and API key.",
+            )
+            .await;
+            return;
+        }
+        self.thread_modes.insert(thread.clone(), ThreadMode::Agent);
+        self.send_reply(
+            thread,
+            "Entered *agent mode*. I'm your AI assistant. Ask me anything, or say \"delegate to claude\" to start a coding task.\nUse `/session` or `/back` to return to session mode.",
+        )
+        .await;
+    }
+
+    /// Enter session mode for a thread.
+    async fn enter_session_mode(&mut self, thread: &ThreadId) {
+        self.thread_modes.insert(thread.clone(), ThreadMode::Session);
+        self.send_reply(
+            thread,
+            "Returned to *session mode*. Text now goes directly to your active CLI session.\nUse `/agent` to re-enter agent mode.",
+        )
+        .await;
+    }
+
+    /// Clear agent conversation context for a thread.
+    async fn handle_clear(&mut self, thread: &ThreadId) {
+        if let Some(ref mut mgr) = self.agent_mgr {
+            mgr.clear_context(thread);
+        }
+        self.send_reply(thread, "Agent conversation context cleared.").await;
+    }
+
+    /// Handle text routed to the agent.
+    async fn handle_agent_text(&mut self, thread: &ThreadId, text: &str) {
+        let agent_mgr = match self.agent_mgr.as_mut() {
+            Some(mgr) => mgr,
+            None => {
+                // Shouldn't happen since we check in enter_agent_mode, but be safe
+                self.send_reply(thread, "Agent mode is not available.").await;
+                return;
+            }
+        };
+
+        let response = agent_mgr
+            .handle_message(thread, text, &mut self.session_mgr, &self.config)
+            .await;
+
+        match response {
+            AgentResponse::Reply(text) => {
+                self.send_reply(thread, &text).await;
+            }
+            AgentResponse::SwitchToSession {
+                session_id,
+                message,
+            } => {
+                self.thread_modes.insert(thread.clone(), ThreadMode::Session);
+                self.session_mgr.switch_active(thread, session_id).ok();
+                self.send_reply(
+                    thread,
+                    &format!(
+                        "[Switched to session #{}. Use `/agent` to return.]",
+                        session_id
+                    ),
+                )
+                .await;
+                if let Some(msg) = message {
+                    if let Err(e) = self.session_mgr.send_input(session_id, &msg).await {
+                        self.send_reply(
+                            thread,
+                            &format!("Error sending to session #{}: {}", session_id, e),
+                        )
+                        .await;
+                    }
+                }
+            }
+            AgentResponse::SessionCreated { session_id: _, info } => {
+                self.send_reply(thread, &info).await;
             }
         }
     }
@@ -233,11 +396,16 @@ impl Router {
         let sessions = self.session_mgr.list_sessions();
         let active_count = sessions.len();
         let pending_count = self.pending_feedback.len();
+        let mode = self.thread_mode(thread);
         let mut reply = format!(
-            "*AgentSmith Status:*\nActive sessions: {}\nDefault tool: {}\nMax sessions: {}",
+            "*AgentSmith Status:*\nActive sessions: {}\nDefault tool: {}\nMax sessions: {}\nThread mode: {}",
             active_count,
             self.config.session_defaults.default_tool,
             self.config.session_defaults.max_sessions,
+            match mode {
+                ThreadMode::Session => "session",
+                ThreadMode::Agent => "agent",
+            },
         );
         if pending_count > 0 {
             reply.push_str(&format!("\nPending feedback requests: {}", pending_count));
@@ -249,6 +417,14 @@ impl Router {
             ));
         } else {
             reply.push_str("\nInteraction agent: disabled");
+        }
+        if self.agent_mgr.is_some() {
+            reply.push_str(&format!(
+                "\nAgent mode: available (provider: {})",
+                self.config.agent.llm.provider
+            ));
+        } else {
+            reply.push_str("\nAgent mode: not available");
         }
         self.send_reply(thread, &reply).await;
     }

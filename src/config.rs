@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub telegram: TelegramConfig,
     #[serde(default)]
+    pub web: WebConfig,
+    #[serde(default)]
     pub session_defaults: SessionDefaultsConfig,
     #[serde(default)]
     pub claude: ClaudeConfig,
@@ -27,6 +29,8 @@ pub struct Config {
     pub interaction_agent: InteractionAgentConfig,
     #[serde(default)]
     pub reporter: ReporterConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -117,6 +121,26 @@ impl Default for TelegramConfig {
             bot_token: None,
             authorized_user: None,
             dm_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct WebConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_host")]
+    pub host: String,
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: default_web_host(),
+            port: default_web_port(),
         }
     }
 }
@@ -279,6 +303,33 @@ impl Default for ReporterConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct AgentConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_agent_mode: bool,
+    #[serde(default = "default_max_context_turns")]
+    pub max_context_turns: usize,
+    #[serde(default)]
+    pub llm: LlmConfig,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_agent_mode: false,
+            max_context_turns: default_max_context_turns(),
+            llm: LlmConfig::default(),
+        }
+    }
+}
+
+fn default_max_context_turns() -> usize {
+    50
+}
+
 fn default_report_interval_secs() -> u64 {
     30
 }
@@ -339,6 +390,14 @@ fn default_quiet_timeout() -> u64 {
     3000
 }
 
+fn default_web_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_web_port() -> u16 {
+    3000
+}
+
 fn home_dir() -> PathBuf {
     dirs_or_home()
 }
@@ -361,6 +420,7 @@ impl Config {
                 signal: SignalConfig::default(),
                 slack: SlackConfig::default(),
                 telegram: TelegramConfig::default(),
+                web: WebConfig::default(),
                 session_defaults: SessionDefaultsConfig::default(),
                 claude: ClaudeConfig::default(),
                 gemini: GeminiConfig::default(),
@@ -368,6 +428,7 @@ impl Config {
                 zeroclaw: ZeroclawConfig::default(),
                 interaction_agent: InteractionAgentConfig::default(),
                 reporter: ReporterConfig::default(),
+                agent: AgentConfig::default(),
             }
         };
 
@@ -419,6 +480,19 @@ impl Config {
         if let Ok(val) = std::env::var("AGENTSMITH_TELEGRAM_AUTHORIZED_USER") {
             if let Ok(id) = val.parse() {
                 self.telegram.authorized_user = Some(id);
+            }
+        }
+
+        // Web overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_WEB_ENABLED") {
+            self.web.enabled = val.parse().unwrap_or(false);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_WEB_HOST") {
+            self.web.host = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_WEB_PORT") {
+            if let Ok(port) = val.parse() {
+                self.web.port = port;
             }
         }
 
@@ -492,6 +566,33 @@ impl Config {
         if let Ok(val) = std::env::var("AGENTSMITH_REPORTER_INTERVAL_SECS") {
             if let Ok(secs) = val.parse() {
                 self.reporter.interval_secs = secs;
+            }
+        }
+
+        // Agent overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_ENABLED") {
+            self.agent.enabled = val.parse().unwrap_or(true);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_AUTO_AGENT_MODE") {
+            self.agent.auto_agent_mode = val.parse().unwrap_or(false);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MAX_CONTEXT_TURNS") {
+            if let Ok(n) = val.parse() {
+                self.agent.max_context_turns = n;
+            }
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_PROVIDER") {
+            self.agent.llm.provider = val;
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_API_KEY") {
+            self.agent.llm.api_key = Some(val);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MODEL") {
+            self.agent.llm.model = Some(val);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MAX_TOKENS") {
+            if let Ok(n) = val.parse() {
+                self.agent.llm.max_tokens = n;
             }
         }
 
