@@ -23,6 +23,8 @@ pub enum Command {
     Back,
     /// Clear agent conversation context: /clear
     Clear,
+    /// Schedule management commands: /schedule
+    Schedule { action: ScheduleAction },
     /// Regular text to route to the active session
     Text(String),
 }
@@ -33,6 +35,30 @@ pub enum MonitorAction {
     Status,
     /// Kill processes for a specific tool
     Kill { tool: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum ScheduleAction {
+    /// Add a new schedule: /schedule add "0 8 * * *" claude check the weather
+    Add {
+        cron_expr: String,
+        tool: String,
+        prompt: String,
+    },
+    /// List all schedules: /schedule list
+    List,
+    /// Delete a schedule: /schedule delete 1
+    Delete { id: u64 },
+    /// Pause a schedule: /schedule pause 1
+    Pause { id: u64 },
+    /// Resume a schedule: /schedule resume 1
+    Resume { id: u64 },
+    /// Trigger a schedule now: /schedule run 1
+    Run { id: u64 },
+    /// Show schedule details: /schedule info 1
+    Info { id: u64 },
+    /// Install MCP server for a CLI agent: /schedule install-tool claude
+    InstallTool { agent: String },
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +75,7 @@ pub fn parse_command(input: &str) -> Command {
         return Command::Text(trimmed.to_string());
     }
 
+    // Use splitn(2, ' ') for the command word, then handle the rest per-command
     let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
     let cmd = parts[0].to_lowercase();
 
@@ -104,8 +131,143 @@ pub fn parse_command(input: &str) -> Command {
                 },
             }
         }
+        "/schedule" | "/sched" | "/cron" => parse_schedule_command(trimmed),
         _ => Command::Text(trimmed.to_string()),
     }
+}
+
+fn parse_schedule_command(input: &str) -> Command {
+    // Split into: /schedule <subcommand> <rest>
+    let after_cmd = input.splitn(2, ' ').nth(1).unwrap_or("").trim();
+
+    if after_cmd.is_empty() {
+        return Command::Schedule {
+            action: ScheduleAction::List,
+        };
+    }
+
+    let (sub, rest) = match after_cmd.splitn(2, ' ').collect::<Vec<_>>().as_slice() {
+        [sub, rest] => (sub.to_lowercase(), rest.trim().to_string()),
+        [sub] => (sub.to_lowercase(), String::new()),
+        _ => return Command::Schedule {
+            action: ScheduleAction::List,
+        },
+    };
+
+    match sub.as_str() {
+        "add" | "create" => {
+            match parse_schedule_add(&rest) {
+                Some(action) => Command::Schedule { action },
+                None => Command::Text(format!(
+                    "Usage: /schedule add \"<cron>\" <tool> <prompt>\n\
+                     Example: /schedule add \"0 8 * * *\" claude check the weather\n\
+                     Or: /schedule add @daily claude check the weather"
+                )),
+            }
+        }
+        "list" | "ls" => Command::Schedule {
+            action: ScheduleAction::List,
+        },
+        "delete" | "rm" | "remove" => {
+            match rest.parse::<u64>() {
+                Ok(id) => Command::Schedule {
+                    action: ScheduleAction::Delete { id },
+                },
+                Err(_) => Command::Text("Usage: /schedule delete <id>".to_string()),
+            }
+        }
+        "pause" => {
+            match rest.parse::<u64>() {
+                Ok(id) => Command::Schedule {
+                    action: ScheduleAction::Pause { id },
+                },
+                Err(_) => Command::Text("Usage: /schedule pause <id>".to_string()),
+            }
+        }
+        "resume" => {
+            match rest.parse::<u64>() {
+                Ok(id) => Command::Schedule {
+                    action: ScheduleAction::Resume { id },
+                },
+                Err(_) => Command::Text("Usage: /schedule resume <id>".to_string()),
+            }
+        }
+        "run" | "trigger" => {
+            match rest.parse::<u64>() {
+                Ok(id) => Command::Schedule {
+                    action: ScheduleAction::Run { id },
+                },
+                Err(_) => Command::Text("Usage: /schedule run <id>".to_string()),
+            }
+        }
+        "info" | "show" => {
+            match rest.parse::<u64>() {
+                Ok(id) => Command::Schedule {
+                    action: ScheduleAction::Info { id },
+                },
+                Err(_) => Command::Text("Usage: /schedule info <id>".to_string()),
+            }
+        }
+        "install-tool" | "install" => {
+            let agent = rest.trim().to_lowercase();
+            if agent.is_empty() {
+                Command::Text(
+                    "Usage: /schedule install-tool <agent>\nSupported agents: claude, gemini"
+                        .to_string(),
+                )
+            } else {
+                Command::Schedule {
+                    action: ScheduleAction::InstallTool { agent },
+                }
+            }
+        }
+        _ => Command::Schedule {
+            action: ScheduleAction::List,
+        },
+    }
+}
+
+/// Parse the "add" subcommand arguments.
+/// Formats:
+///   /schedule add "0 8 * * *" claude check the weather
+///   /schedule add @daily claude check the weather
+fn parse_schedule_add(input: &str) -> Option<ScheduleAction> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    let (cron_expr, remainder) = if input.starts_with('"') {
+        // Quoted cron expression
+        let end_quote = input[1..].find('"')?;
+        let expr = input[1..=end_quote].to_string();
+        let rest = input[end_quote + 2..].trim().to_string();
+        (expr, rest)
+    } else if input.starts_with('@') {
+        // Preset alias
+        let space = input.find(' ')?;
+        let alias = input[..space].to_string();
+        let rest = input[space + 1..].trim().to_string();
+        (alias, rest)
+    } else {
+        return None;
+    };
+
+    // remainder should be: <tool> <prompt...>
+    let (tool, prompt) = match remainder.splitn(2, ' ').collect::<Vec<_>>().as_slice() {
+        [tool, prompt] => (tool.to_lowercase(), prompt.trim().to_string()),
+        _ => return None,
+    };
+
+    if prompt.is_empty() {
+        return None;
+    }
+
+    Some(ScheduleAction::Add {
+        cron_expr,
+        tool,
+        prompt,
+    })
 }
 
 pub fn help_text() -> &'static str {
@@ -125,6 +287,19 @@ pub fn help_text() -> &'static str {
 `/session` - Return to session mode (direct passthrough)
 `/back` - Alias for /session
 `/clear` - Clear agent conversation context
+
+*Scheduled Tasks:* (aliases: `/sched`, `/cron`)
+`/schedule list` - List all scheduled tasks
+`/schedule add "<cron>" <tool> <prompt>` - Add a schedule
+`/schedule add @daily claude check the weather` - Add with preset
+`/schedule delete <id>` - Delete a schedule
+`/schedule pause <id>` - Pause a schedule
+`/schedule resume <id>` - Resume a paused schedule
+`/schedule run <id>` - Trigger a schedule immediately
+`/schedule info <id>` - Show schedule details
+`/schedule install-tool <agent>` - Install MCP server (claude, gemini)
+Presets: `@daily`, `@hourly`, `@weekly`, `@twice-daily`, `@every-30m`, `@weekdays`
+
 `/help` - Show this help message
 
 In *session mode* (default), text goes directly to your active CLI session.

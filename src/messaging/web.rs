@@ -13,6 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::WebConfig;
 use crate::messaging::{IncomingMessage, OutgoingMessage, Platform, ThreadId};
+use crate::scheduler::Scheduler;
+use crate::scheduler::api::{ScheduleApiState, schedule_routes};
 
 /// Snapshot of system status shared from Router to the web adapter.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -51,13 +53,19 @@ struct AppState {
 pub struct WebAdapter {
     config: WebConfig,
     status_snapshot: Arc<RwLock<StatusSnapshot>>,
+    scheduler: Option<Arc<RwLock<Scheduler>>>,
 }
 
 impl WebAdapter {
-    pub fn new(config: WebConfig, status_snapshot: Arc<RwLock<StatusSnapshot>>) -> Self {
+    pub fn new(
+        config: WebConfig,
+        status_snapshot: Arc<RwLock<StatusSnapshot>>,
+        scheduler: Option<Arc<RwLock<Scheduler>>>,
+    ) -> Self {
         Self {
             config,
             status_snapshot,
+            scheduler,
         }
     }
 
@@ -82,11 +90,17 @@ impl WebAdapter {
             status_snapshot: self.status_snapshot,
         };
 
-        let app = Router::new()
+        let mut app = Router::new()
             .route("/", get(index_handler))
             .route("/ws", get(ws_handler))
             .route("/api/status", get(status_handler))
             .with_state(state);
+
+        // Add schedule API routes if scheduler is available
+        if let Some(scheduler) = self.scheduler {
+            let sched_state = ScheduleApiState { scheduler };
+            app = app.merge(schedule_routes(sched_state));
+        }
 
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;

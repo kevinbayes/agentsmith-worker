@@ -7,5 +7,6 @@ pub mod messaging;
 pub mod monitor;
 pub mod reporter;
 pub mod router;
+pub mod scheduler;
 pub mod session;
 pub mod shutdown;

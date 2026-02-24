@@ -3,6 +3,7 @@ use crate::session::SessionId;
 use super::context::Role;
 use super::skill::chat::ChatSkill;
 use super::skill::delegate::DelegateSkill;
+use super::skill::schedule::ScheduleSkill;
 use super::skill::status::StatusSkill;
 use super::skill::summarize::SummarizeSkill;
 use super::skill::toolconfig::ToolConfigSkill;
@@ -157,6 +158,30 @@ fn rule_match(text: &str) -> Option<Skill> {
         return Some(Skill::Delegate(DelegateSkill));
     }
 
+    // Schedule patterns
+    if lower.starts_with("schedule ")
+        || lower.starts_with("every morning")
+        || lower.starts_with("every evening")
+        || lower.starts_with("every day")
+        || lower.starts_with("every hour")
+        || lower.starts_with("every week")
+        || lower.starts_with("twice a day")
+        || lower.starts_with("daily ")
+        || lower.starts_with("list schedule")
+        || lower.starts_with("list my schedule")
+        || lower.starts_with("show schedule")
+        || lower.starts_with("delete schedule")
+        || lower.starts_with("remove schedule")
+        || lower.starts_with("pause schedule")
+        || lower.starts_with("resume schedule")
+        || lower.starts_with("run schedule")
+        || lower == "schedules"
+        || lower == "my schedules"
+        || lower == "list schedules"
+    {
+        return Some(Skill::Schedule(ScheduleSkill));
+    }
+
     // Tool config patterns
     if lower.contains("mcp server")
         || lower.contains("mcp servers")
@@ -189,7 +214,7 @@ async fn llm_select_skill(
          {}\n\
          Conversation history:\n{}\n\n\
          Respond with ONLY a JSON object (no markdown fencing):\n\
-         {{\"skill\": \"chat|delegate|summarize|status|toolconfig\", \"input\": \"<refined input for the skill>\", \"reasoning\": \"<brief explanation>\"}}",
+         {{\"skill\": \"chat|delegate|summarize|status|toolconfig|schedule\", \"input\": \"<refined input for the skill>\", \"reasoning\": \"<brief explanation>\"}}",
         skills_desc, history
     );
 
@@ -229,6 +254,7 @@ fn parse_skill_selection(response: &str, original_input: &str) -> Option<Skill> 
         "summarize" => Some(Skill::Summarize(SummarizeSkill)),
         "status" => Some(Skill::Status(StatusSkill)),
         "toolconfig" => Some(Skill::ToolConfig(ToolConfigSkill)),
+        "schedule" => Some(Skill::Schedule(ScheduleSkill)),
         _ => None,
     }
 }

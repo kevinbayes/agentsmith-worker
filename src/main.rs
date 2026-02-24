@@ -15,6 +15,8 @@ use agentsmith_remote_worker::messaging::telegram::TelegramAdapter;
 use agentsmith_remote_worker::messaging::web::{StatusSnapshot, WebAdapter};
 use agentsmith_remote_worker::messaging::{IncomingMessage, OutgoingMessage};
 use agentsmith_remote_worker::router::Router;
+use agentsmith_remote_worker::scheduler::Scheduler;
+use agentsmith_remote_worker::scheduler::store::ScheduleStore;
 use agentsmith_remote_worker::shutdown;
 
 #[derive(Parser, Debug)]
@@ -147,6 +149,16 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Scheduler
+    let scheduler = if config.scheduler.enabled {
+        tracing::info!("Starting scheduler...");
+        let store = ScheduleStore::new(&config.daemon.data_dir);
+        let sched = Scheduler::new(config.scheduler.clone(), store);
+        Some(Arc::new(RwLock::new(sched)))
+    } else {
+        None
+    };
+
     // Web adapter
     let status_snapshot = if config.web.enabled {
         Some(Arc::new(RwLock::new(StatusSnapshot::default())))
@@ -156,7 +168,7 @@ async fn main() -> Result<()> {
 
     if config.web.enabled {
         tracing::info!("Starting Web adapter...");
-        let adapter = WebAdapter::new(config.web.clone(), status_snapshot.clone().unwrap());
+        let adapter = WebAdapter::new(config.web.clone(), status_snapshot.clone().unwrap(), scheduler.clone());
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingMessage>(256);
         outgoing_txs.push(outgoing_tx);
 
@@ -175,7 +187,7 @@ async fn main() -> Result<()> {
     }
 
     // Start router
-    let router = Router::new(config, incoming_rx, outgoing_txs, cancel.clone(), status_snapshot);
+    let router = Router::new(config, incoming_rx, outgoing_txs, cancel.clone(), status_snapshot, scheduler);
 
     tracing::info!("AgentSmith Remote Worker is running. Press Ctrl+C to stop.");
     router.run().await?;

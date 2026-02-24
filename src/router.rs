@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
@@ -7,12 +8,13 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::interaction::FeedbackRequest;
 use crate::agent::orchestrator::AgentResponse;
 use crate::agent::{AgentManager, ThreadMode};
-use crate::command::{self, Command, MonitorAction, StopTarget};
+use crate::command::{self, Command, MonitorAction, ScheduleAction, StopTarget};
 use crate::config::Config;
 use crate::messaging::web::{AgentSnapshotItem, SessionSnapshotItem, StatusSnapshot};
-use crate::messaging::{IncomingMessage, OutgoingMessage, ThreadId};
+use crate::messaging::{IncomingMessage, OutgoingMessage, Platform, ThreadId};
 use crate::monitor::Monitor;
 use crate::reporter::Reporter;
+use crate::scheduler::Scheduler;
 use crate::session::{SessionId, SessionManager, SessionTool};
 
 /// Tracks a pending feedback request awaiting user response.
@@ -46,6 +48,8 @@ pub struct Router {
     agent_mgr: Option<AgentManager>,
     /// Per-thread mode: Session (default) or Agent.
     thread_modes: HashMap<ThreadId, ThreadMode>,
+    /// Shared scheduler instance (None if scheduling is disabled).
+    scheduler: Option<Arc<RwLock<Scheduler>>>,
 }
 
 impl Router {
@@ -55,6 +59,7 @@ impl Router {
         outgoing_txs: Vec<mpsc::Sender<OutgoingMessage>>,
         cancel: CancellationToken,
         status_snapshot: Option<Arc<RwLock<StatusSnapshot>>>,
+        scheduler: Option<Arc<RwLock<Scheduler>>>,
     ) -> Self {
         let session_mgr = SessionManager::new(config.clone());
         let monitor = Monitor::from_config(&config);
@@ -74,6 +79,7 @@ impl Router {
             started_at: Instant::now(),
             agent_mgr,
             thread_modes: HashMap::new(),
+            scheduler,
         }
     }
 
@@ -131,6 +137,9 @@ impl Router {
                     if let Some(ref mut reporter) = self.reporter {
                         reporter.maybe_report(&self.monitor, &self.session_mgr).await;
                     }
+                    // Poll scheduled tasks
+                    self.poll_scheduled_tasks().await;
+                    self.poll_schedule_results().await;
                     // Update web UI status snapshot
                     if let Some(ref snapshot) = self.status_snapshot {
                         let sessions = self.session_mgr.list_sessions();
@@ -204,6 +213,9 @@ impl Router {
             Command::Monitor { action } => {
                 self.handle_monitor(&thread, action).await;
             }
+            Command::Schedule { action } => {
+                self.handle_schedule(&thread, action).await;
+            }
             // Text routing depends on mode
             Command::Text(text) => {
                 match self.thread_mode(&thread) {
@@ -265,8 +277,9 @@ impl Router {
             }
         };
 
+        let scheduler_clone = self.scheduler.clone();
         let response = agent_mgr
-            .handle_message(thread, text, &mut self.session_mgr, &self.config)
+            .handle_message(thread, text, &mut self.session_mgr, &self.config, scheduler_clone)
             .await;
 
         match response {
@@ -425,6 +438,16 @@ impl Router {
             ));
         } else {
             reply.push_str("\nAgent mode: not available");
+        }
+        if let Some(ref scheduler) = self.scheduler {
+            let sched = scheduler.read().await;
+            let summary = sched.summary();
+            reply.push_str(&format!(
+                "\nScheduler: {} schedules ({} active, {} running, {} paused)",
+                summary.total, summary.active, summary.running, summary.paused
+            ));
+        } else if self.config.scheduler.enabled {
+            reply.push_str("\nScheduler: enabled (no schedules)");
         }
         self.send_reply(thread, &reply).await;
     }
@@ -671,6 +694,424 @@ impl Router {
         }
     }
 
+    /// Handle schedule management commands.
+    async fn handle_schedule(&mut self, thread: &ThreadId, action: ScheduleAction) {
+        // InstallTool doesn't need the scheduler running
+        if let ScheduleAction::InstallTool { ref agent } = action {
+            self.handle_install_tool(thread, agent).await;
+            return;
+        }
+
+        let scheduler = match &self.scheduler {
+            Some(s) => s.clone(),
+            None => {
+                self.send_reply(
+                    thread,
+                    "Scheduler is not enabled. Set `scheduler.enabled = true` in config.",
+                )
+                .await;
+                return;
+            }
+        };
+
+        match action {
+            ScheduleAction::Add {
+                cron_expr,
+                tool,
+                prompt,
+            } => {
+                let mut sched = scheduler.write().await;
+                match sched.add_job(
+                    &cron_expr,
+                    &tool,
+                    &prompt,
+                    None,
+                    &thread.platform.to_string(),
+                    &thread.id,
+                ) {
+                    Ok(job) => {
+                        let next = job
+                            .next_run
+                            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "N/A".to_string());
+                        self.send_reply(
+                            thread,
+                            &format!(
+                                "Schedule #{} created: `{}` runs `{}` with `{}`\nCron: `{}`\nNext run: {}",
+                                job.id, job.name, tool, prompt, job.cron_expr, next
+                            ),
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        self.send_reply(thread, &format!("Failed to create schedule: {}", e))
+                            .await;
+                    }
+                }
+            }
+            ScheduleAction::List => {
+                let sched = scheduler.read().await;
+                let jobs = sched.list_jobs();
+                if jobs.is_empty() {
+                    self.send_reply(thread, "No scheduled tasks. Use `/schedule add` to create one.")
+                        .await;
+                    return;
+                }
+                let mut lines = vec!["*Scheduled Tasks:*".to_string()];
+                for job in jobs {
+                    let next = job
+                        .next_run
+                        .map(|t| t.format("%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    lines.push(format!(
+                        "  #{} `{}` [{}] {} → {} (next: {})",
+                        job.id, job.name, job.status, job.tool, short_prompt(&job.prompt), next
+                    ));
+                }
+                self.send_reply(thread, &lines.join("\n")).await;
+            }
+            ScheduleAction::Delete { id } => {
+                let mut sched = scheduler.write().await;
+                match sched.delete_job(id) {
+                    Ok(()) => {
+                        self.send_reply(thread, &format!("Schedule #{} deleted.", id))
+                            .await;
+                    }
+                    Err(e) => {
+                        self.send_reply(thread, &format!("Failed: {}", e)).await;
+                    }
+                }
+            }
+            ScheduleAction::Pause { id } => {
+                let mut sched = scheduler.write().await;
+                match sched.pause_job(id) {
+                    Ok(()) => {
+                        self.send_reply(thread, &format!("Schedule #{} paused.", id))
+                            .await;
+                    }
+                    Err(e) => {
+                        self.send_reply(thread, &format!("Failed: {}", e)).await;
+                    }
+                }
+            }
+            ScheduleAction::Resume { id } => {
+                let mut sched = scheduler.write().await;
+                match sched.resume_job(id) {
+                    Ok(()) => {
+                        self.send_reply(thread, &format!("Schedule #{} resumed.", id))
+                            .await;
+                    }
+                    Err(e) => {
+                        self.send_reply(thread, &format!("Failed: {}", e)).await;
+                    }
+                }
+            }
+            ScheduleAction::Run { id } => {
+                let mut sched = scheduler.write().await;
+                match sched.trigger_now(id) {
+                    Ok(()) => {
+                        self.send_reply(
+                            thread,
+                            &format!("Schedule #{} triggered. It will run on the next poll cycle.", id),
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        self.send_reply(thread, &format!("Failed: {}", e)).await;
+                    }
+                }
+            }
+            ScheduleAction::Info { id } => {
+                let sched = scheduler.read().await;
+                match sched.get_job(id) {
+                    Some(job) => {
+                        let next = job
+                            .next_run
+                            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "N/A".to_string());
+                        let last = job
+                            .last_run
+                            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "never".to_string());
+                        let last_result = job
+                            .last_result
+                            .as_ref()
+                            .map(|r| {
+                                format!(
+                                    "{} ({}s)",
+                                    if r.success { "success" } else { "failed" },
+                                    r.duration_secs
+                                )
+                            })
+                            .unwrap_or_else(|| "N/A".to_string());
+                        self.send_reply(
+                            thread,
+                            &format!(
+                                "*Schedule #{}:*\nName: `{}`\nStatus: {}\nTool: {}\nPrompt: {}\nCron: `{}`\nNext run: {}\nLast run: {}\nLast result: {}\nRun count: {}\nConsecutive failures: {}",
+                                job.id, job.name, job.status, job.tool, job.prompt,
+                                job.cron_expr, next, last, last_result, job.run_count, job.consecutive_failures
+                            ),
+                        )
+                        .await;
+                    }
+                    None => {
+                        self.send_reply(thread, &format!("Schedule #{} not found.", id))
+                            .await;
+                    }
+                }
+            }
+            ScheduleAction::InstallTool { .. } => {
+                // Handled above before scheduler check — unreachable
+            }
+        }
+    }
+
+    /// Poll for scheduled tasks that are due and spawn executions.
+    async fn poll_scheduled_tasks(&mut self) {
+        let scheduler = match &self.scheduler {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let mut sched = scheduler.write().await;
+        let due = sched.collect_due_jobs();
+
+        for id in due {
+            if !sched.can_execute() {
+                tracing::debug!("Max concurrent executions reached, deferring schedule #{}", id);
+                break;
+            }
+
+            let job = match sched.get_job(id) {
+                Some(j) => j.clone(),
+                None => continue,
+            };
+
+            let config = self.config.clone();
+            let working_dir = self.config.daemon.working_dir.clone();
+            let timeout = sched.execution_timeout_secs();
+
+            let handle = tokio::spawn(async move {
+                crate::scheduler::executor::execute_scheduled_job(
+                    &job.tool,
+                    &job.prompt,
+                    &config,
+                    &working_dir,
+                    timeout,
+                )
+                .await
+            });
+
+            sched.register_execution(id, handle);
+            tracing::info!("Scheduled job #{} '{}' started execution", id, job.name);
+        }
+    }
+
+    /// Poll for completed schedule executions, deliver output, and archive.
+    async fn poll_schedule_results(&mut self) {
+        let scheduler = match &self.scheduler {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let finished = {
+            let mut sched = scheduler.write().await;
+            sched.collect_finished()
+        };
+
+        for (id, result) in finished {
+            let job = {
+                let sched = scheduler.read().await;
+                sched.get_job(id).cloned()
+            };
+
+            if let Some(job) = &job {
+                // Deliver output to origin thread
+                let thread = ThreadId {
+                    platform: match job.origin.platform.as_str() {
+                        "Signal" => Platform::Signal,
+                        "Slack" => Platform::Slack,
+                        "Telegram" => Platform::Telegram,
+                        "Web" => Platform::Web,
+                        _ => Platform::Web,
+                    },
+                    id: job.origin.thread_id.clone(),
+                };
+
+                let status_str = if result.success { "completed" } else { "failed" };
+                let output_preview = short_output(&result.output, 500);
+                self.send_reply(
+                    &thread,
+                    &format!(
+                        "[Schedule #{} '{}' {} ({}s)]\n{}",
+                        job.id, job.name, status_str, result.duration_secs, output_preview
+                    ),
+                )
+                .await;
+
+                // Archive the result
+                let data_dir = self.config.daemon.data_dir.clone();
+                let gcs_config = self.config.scheduler.gcs.clone();
+                let job_clone = job.clone();
+                let result_clone = result.clone();
+                tokio::spawn(async move {
+                    crate::scheduler::output::archive_result(
+                        &job_clone,
+                        &result_clone,
+                        &data_dir,
+                        gcs_config.as_ref(),
+                    )
+                    .await;
+                });
+            }
+
+            // Record completion and check for auto-pause
+            let auto_paused_info = {
+                let mut sched = scheduler.write().await;
+                sched.record_completion(id, &result);
+
+                // Check if auto-paused
+                sched.get_job(id).and_then(|j| {
+                    if j.status == crate::scheduler::ScheduleStatus::Paused
+                        && j.consecutive_failures >= self.config.scheduler.max_consecutive_failures
+                    {
+                        Some((j.id, j.name.clone(), j.consecutive_failures, j.origin.clone()))
+                    } else {
+                        None
+                    }
+                })
+            };
+
+            // Send auto-pause notification outside the lock
+            if let Some((job_id, name, failures, origin)) = auto_paused_info {
+                let thread = thread_from_origin(&origin);
+                self.send_reply(
+                    &thread,
+                    &format!(
+                        "Schedule #{} '{}' has been auto-paused after {} consecutive failures. Use `/schedule resume {}` to re-enable.",
+                        job_id, name, failures, job_id
+                    ),
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Handle `/schedule install-tool <agent>` — configure an AI CLI to use the MCP server.
+    async fn handle_install_tool(&mut self, thread: &ThreadId, agent: &str) {
+        let settings_path = match agent {
+            "claude" => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                PathBuf::from(home).join(".claude").join("settings.json")
+            }
+            "gemini" => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                PathBuf::from(home).join(".gemini").join("settings.json")
+            }
+            _ => {
+                self.send_reply(
+                    thread,
+                    &format!(
+                        "Unsupported agent '{}'. Supported: claude, gemini",
+                        agent
+                    ),
+                )
+                .await;
+                return;
+            }
+        };
+
+        let script_path = match find_mcp_script() {
+            Some(p) => p,
+            None => {
+                self.send_reply(
+                    thread,
+                    "Could not locate `tools/agentsmith-scheduler-mcp.py`. \
+                     Ensure it exists next to the AgentSmith binary or in the working directory.",
+                )
+                .await;
+                return;
+            }
+        };
+
+        let api_url = format!("http://{}:{}", self.config.web.host, self.config.web.port);
+
+        // Build MCP server config entry
+        let mcp_config = serde_json::json!({
+            "command": "python3",
+            "args": [script_path.to_string_lossy()],
+            "env": {
+                "AGENTSMITH_URL": api_url,
+            }
+        });
+
+        // Read existing settings or start with empty object
+        let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!({})),
+            Err(_) => serde_json::json!({}),
+        };
+
+        // Ensure mcpServers key exists
+        if settings.get("mcpServers").is_none() {
+            settings["mcpServers"] = serde_json::json!({});
+        }
+        settings["mcpServers"]["agentsmith-scheduler"] = mcp_config;
+
+        // Write back with pretty-print, creating parent dirs if needed
+        if let Some(parent) = settings_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.send_reply(
+                    thread,
+                    &format!("Failed to create directory {}: {}", parent.display(), e),
+                )
+                .await;
+                return;
+            }
+        }
+
+        match serde_json::to_string_pretty(&settings) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&settings_path, &content) {
+                    self.send_reply(
+                        thread,
+                        &format!("Failed to write settings: {}", e),
+                    )
+                    .await;
+                    return;
+                }
+            }
+            Err(e) => {
+                self.send_reply(
+                    thread,
+                    &format!("Failed to serialize settings: {}", e),
+                )
+                .await;
+                return;
+            }
+        }
+
+        self.send_reply(
+            thread,
+            &format!(
+                "MCP server installed for *{}*.\n\
+                 Settings: `{}`\n\
+                 Script: `{}`\n\
+                 API URL: `{}`\n\n\
+                 Restart {} to pick up the new MCP server.",
+                agent,
+                settings_path.display(),
+                script_path.display(),
+                api_url,
+                match agent {
+                    "claude" => "Claude Code",
+                    "gemini" => "Gemini CLI",
+                    _ => agent,
+                },
+            ),
+        )
+        .await;
+    }
+
     fn all_active_threads(&self) -> Vec<ThreadId> {
         self.session_mgr
             .list_sessions()
@@ -678,4 +1119,66 @@ impl Router {
             .flat_map(|s| self.session_mgr.threads_for_session(s.id))
             .collect()
     }
+}
+
+/// Truncate a prompt string for display in listings.
+fn short_prompt(s: &str) -> String {
+    if s.len() <= 40 {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..37])
+    }
+}
+
+/// Truncate output for inline display.
+fn short_output(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
+}
+
+/// Convert a PersistedThreadId to a ThreadId.
+fn thread_from_origin(origin: &crate::scheduler::PersistedThreadId) -> ThreadId {
+    ThreadId {
+        platform: match origin.platform.as_str() {
+            "Signal" => Platform::Signal,
+            "Slack" => Platform::Slack,
+            "Telegram" => Platform::Telegram,
+            "Web" => Platform::Web,
+            _ => Platform::Web,
+        },
+        id: origin.thread_id.clone(),
+    }
+}
+
+/// Locate the MCP server script, checking several candidate paths.
+fn find_mcp_script() -> Option<PathBuf> {
+    let script_name = "tools/agentsmith-scheduler-mcp.py";
+
+    // Next to the current executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join(script_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            // One level up (handles target/debug layout)
+            let candidate = exe_dir.join("..").join(script_name);
+            if candidate.is_file() {
+                return Some(std::fs::canonicalize(&candidate).unwrap_or(candidate));
+            }
+        }
+    }
+
+    // Current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join(script_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
 }

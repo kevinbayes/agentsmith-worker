@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::config::{AgentConfig, Config};
 use crate::llm::LlmProvider;
 use crate::messaging::ThreadId;
+use crate::scheduler::Scheduler;
 use crate::session::SessionManager;
 
 use self::context::ConversationContext;
@@ -111,6 +112,7 @@ impl AgentManager {
         text: &str,
         session_mgr: &mut SessionManager,
         config: &Config,
+        scheduler: Option<Arc<tokio::sync::RwLock<Scheduler>>>,
     ) -> AgentResponse {
         let llm = Arc::clone(&self.llm);
         let agent = self.get_or_create(thread);
@@ -120,6 +122,7 @@ impl AgentManager {
             config,
             thread,
             llm: &llm,
+            scheduler,
         };
 
         match process_message(agent, text, &mut skill_ctx).await {

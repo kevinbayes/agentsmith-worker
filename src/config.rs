@@ -31,6 +31,8 @@ pub struct Config {
     pub reporter: ReporterConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -326,6 +328,60 @@ impl Default for AgentConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct SchedulerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_max_schedules")]
+    pub max_schedules: usize,
+    #[serde(default = "default_max_concurrent_executions")]
+    pub max_concurrent_executions: usize,
+    #[serde(default = "default_execution_timeout_secs")]
+    pub execution_timeout_secs: u64,
+    #[serde(default = "default_max_consecutive_failures")]
+    pub max_consecutive_failures: u32,
+    #[serde(default)]
+    pub gcs: Option<GcsConfig>,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_schedules: default_max_schedules(),
+            max_concurrent_executions: default_max_concurrent_executions(),
+            execution_timeout_secs: default_execution_timeout_secs(),
+            max_consecutive_failures: default_max_consecutive_failures(),
+            gcs: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GcsConfig {
+    pub bucket: String,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub credentials_path: Option<std::path::PathBuf>,
+}
+
+fn default_max_schedules() -> usize {
+    50
+}
+
+fn default_max_concurrent_executions() -> usize {
+    3
+}
+
+fn default_execution_timeout_secs() -> u64 {
+    300
+}
+
+fn default_max_consecutive_failures() -> u32 {
+    3
+}
+
 fn default_max_context_turns() -> usize {
     50
 }
@@ -429,6 +485,7 @@ impl Config {
                 interaction_agent: InteractionAgentConfig::default(),
                 reporter: ReporterConfig::default(),
                 agent: AgentConfig::default(),
+                scheduler: SchedulerConfig::default(),
             }
         };
 
@@ -593,6 +650,31 @@ impl Config {
         if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MAX_TOKENS") {
             if let Ok(n) = val.parse() {
                 self.agent.llm.max_tokens = n;
+            }
+        }
+
+        // Scheduler overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_SCHEDULER_ENABLED") {
+            self.scheduler.enabled = val.parse().unwrap_or(false);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_SCHEDULER_MAX_SCHEDULES") {
+            if let Ok(n) = val.parse() {
+                self.scheduler.max_schedules = n;
+            }
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_SCHEDULER_MAX_CONCURRENT") {
+            if let Ok(n) = val.parse() {
+                self.scheduler.max_concurrent_executions = n;
+            }
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_SCHEDULER_TIMEOUT_SECS") {
+            if let Ok(n) = val.parse() {
+                self.scheduler.execution_timeout_secs = n;
+            }
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_SCHEDULER_MAX_FAILURES") {
+            if let Ok(n) = val.parse() {
+                self.scheduler.max_consecutive_failures = n;
             }
         }
 
