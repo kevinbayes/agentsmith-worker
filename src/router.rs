@@ -1002,7 +1002,7 @@ impl Router {
         let settings_path = match agent {
             "claude" => {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home).join(".claude").join("settings.json")
+                PathBuf::from(home).join(".claude.json")
             }
             "gemini" => {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -1038,6 +1038,7 @@ impl Router {
 
         // Build MCP server config entry
         let mcp_config = serde_json::json!({
+            "type": "stdio",
             "command": "python3",
             "args": [script_path.to_string_lossy()],
             "env": {

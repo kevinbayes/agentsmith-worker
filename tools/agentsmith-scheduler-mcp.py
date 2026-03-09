@@ -10,12 +10,20 @@ Dependencies: Python 3 stdlib only (json, os, sys, urllib.request).
 """
 
 import json
+import logging
 import os
 import sys
 import urllib.request
 import urllib.error
 
 BASE_URL = os.environ.get("AGENTSMITH_URL", "http://127.0.0.1:3000")
+
+logging.basicConfig(
+    stream=sys.stderr,
+    level=logging.DEBUG,
+    format="[agentsmith-mcp] %(message)s",
+)
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # HTTP helper
@@ -94,7 +102,12 @@ def trigger_schedule(args):
 TOOLS = [
     {
         "name": "list_schedules",
-        "description": "List all scheduled tasks in AgentSmith.",
+        "description": (
+            "List all scheduled tasks in AgentSmith. Returns each schedule's ID, name, "
+            "cron expression, tool, prompt, status (active/paused), next run time, "
+            "total run count, and consecutive failure count. Use this to find schedule IDs "
+            "needed by other schedule management tools."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -103,21 +116,33 @@ TOOLS = [
     },
     {
         "name": "create_schedule",
-        "description": "Create a new scheduled task. Requires a cron expression, tool name, and prompt.",
+        "description": (
+            "Create a new scheduled task in AgentSmith. The task will run the specified "
+            "AI CLI tool with the given prompt on the cron schedule. "
+            "Presets: @daily (8 AM), @hourly, @weekly (Mon 8 AM), @twice-daily (8 AM & 6 PM), "
+            "@every-30m, @weekdays (Mon-Fri 8 AM). "
+            "Standard 6-field cron: sec min hour day month weekday "
+            "(e.g. '0 30 9 * * 1-5' = weekdays at 9:30 AM)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "cron": {
                     "type": "string",
-                    "description": 'Cron expression (e.g. "0 8 * * *") or preset (@daily, @hourly, @weekly).',
+                    "description": (
+                        "Cron expression or preset. "
+                        "Presets: @daily, @hourly, @weekly, @twice-daily, @every-30m, @weekdays. "
+                        "Or 6-field cron: 'sec min hour day month weekday'."
+                    ),
                 },
                 "tool": {
                     "type": "string",
-                    "description": "CLI tool to run (claude, gemini, goose, zeroclaw).",
+                    "enum": ["claude", "gemini", "goose", "zeroclaw"],
+                    "description": "Which AI CLI tool to run.",
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The prompt/task to send to the tool.",
+                    "description": "The prompt/task to send to the tool on each run.",
                 },
                 "name": {
                     "type": "string",
@@ -129,13 +154,16 @@ TOOLS = [
     },
     {
         "name": "get_schedule",
-        "description": "Get details of a specific schedule by ID.",
+        "description": (
+            "Get full details of a specific schedule by ID, including its run history. "
+            "Call list_schedules first to find the schedule ID."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {
                     "type": "integer",
-                    "description": "Schedule ID.",
+                    "description": "Schedule ID (from list_schedules).",
                 },
             },
             "required": ["id"],
@@ -143,13 +171,16 @@ TOOLS = [
     },
     {
         "name": "delete_schedule",
-        "description": "Delete a schedule by ID.",
+        "description": (
+            "Permanently delete a schedule by ID. This cannot be undone. "
+            "Call list_schedules first to find the schedule ID."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {
                     "type": "integer",
-                    "description": "Schedule ID.",
+                    "description": "Schedule ID (from list_schedules).",
                 },
             },
             "required": ["id"],
@@ -157,13 +188,16 @@ TOOLS = [
     },
     {
         "name": "pause_schedule",
-        "description": "Pause a schedule so it stops running until resumed.",
+        "description": (
+            "Pause an active schedule so it stops running until resumed. "
+            "Call list_schedules first to find the schedule ID."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {
                     "type": "integer",
-                    "description": "Schedule ID.",
+                    "description": "Schedule ID (from list_schedules).",
                 },
             },
             "required": ["id"],
@@ -171,13 +205,16 @@ TOOLS = [
     },
     {
         "name": "resume_schedule",
-        "description": "Resume a paused schedule.",
+        "description": (
+            "Resume a paused schedule so it starts running again on its cron timing. "
+            "Call list_schedules first to find the schedule ID."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {
                     "type": "integer",
-                    "description": "Schedule ID.",
+                    "description": "Schedule ID (from list_schedules).",
                 },
             },
             "required": ["id"],
@@ -185,13 +222,17 @@ TOOLS = [
     },
     {
         "name": "trigger_schedule",
-        "description": "Trigger a schedule to run immediately, regardless of its cron timing.",
+        "description": (
+            "Trigger a schedule to run immediately, regardless of its cron timing or "
+            "paused status. The schedule's next scheduled run is not affected. "
+            "Call list_schedules first to find the schedule ID."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {
                     "type": "integer",
-                    "description": "Schedule ID.",
+                    "description": "Schedule ID (from list_schedules).",
                 },
             },
             "required": ["id"],
@@ -220,6 +261,7 @@ def handle_request(msg):
     params = msg.get("params", {})
 
     if method == "initialize":
+        log.info("initialize received (protocol %s)", params.get("protocolVersion", "?"))
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -230,13 +272,29 @@ def handle_request(msg):
                     "name": "agentsmith-scheduler",
                     "version": "1.0.0",
                 },
+                "instructions": (
+                    "AgentSmith Scheduler: manage scheduled/recurring tasks. "
+                    "Use these tools when the user asks about scheduling, cron jobs, "
+                    "recurring tasks, or listing/managing scheduled work."
+                ),
             },
         }
 
     if method == "notifications/initialized":
+        log.info("client initialized")
         return None  # Notification — no response
 
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+
+    if method in ("resources/list", "resources/templates/list"):
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}}
+
+    if method == "prompts/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}}
+
     if method == "tools/list":
+        log.info("tools/list requested")
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -246,6 +304,7 @@ def handle_request(msg):
     if method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
+        log.info("tools/call: %s(%s)", tool_name, json.dumps(arguments))
 
         handler = TOOL_DISPATCH.get(tool_name)
         if handler is None:
@@ -271,6 +330,7 @@ def handle_request(msg):
                 },
             }
         except Exception as e:
+            log.error("tools/call %s failed: %s", tool_name, e)
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -281,6 +341,7 @@ def handle_request(msg):
             }
 
     # Unknown method
+    log.warning("unknown method: %s", method)
     if msg_id is not None:
         return {
             "jsonrpc": "2.0",
@@ -298,13 +359,19 @@ def handle_request(msg):
 # ---------------------------------------------------------------------------
 
 def main():
-    for line in sys.stdin:
+    log.info("starting (AGENTSMITH_URL=%s)", BASE_URL)
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            log.info("stdin closed, exiting")
+            break  # EOF
         line = line.strip()
         if not line:
             continue
         try:
             msg = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            log.warning("invalid JSON: %s", e)
             continue
 
         response = handle_request(msg)

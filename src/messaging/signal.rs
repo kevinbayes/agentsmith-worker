@@ -306,7 +306,7 @@ impl SignalAdapter {
             %uuid,
             %timestamp,
             our_aci = %Uuid::from(our_aci),
-            our_device_id,
+            our_device_id = u32::from(our_device_id),
             message_to_self,
             body_len = msg.text.len(),
             "SEND: preparing message"
@@ -314,7 +314,7 @@ impl SignalAdapter {
 
         // Check session state for recipient device 1 (primary)
         let protocol_store = self.manager.store().aci_protocol_store();
-        let recipient_addr = ProtocolAddress::new(uuid.to_string(), DeviceId::from(1u32));
+        let recipient_addr = ProtocolAddress::new(uuid.to_string(), DeviceId::new(1).expect("valid device id"));
         match protocol_store.load_session(&recipient_addr).await {
             Ok(Some(session)) => {
                 match session.session_version() {
@@ -361,7 +361,7 @@ impl SignalAdapter {
         if !message_to_self {
             let self_addr = ProtocolAddress::new(
                 Uuid::from(our_aci).to_string(),
-                DeviceId::from(our_device_id),
+                our_device_id,
             );
             match protocol_store.load_session(&self_addr).await {
                 Ok(Some(_)) => tracing::info!(
@@ -381,7 +381,8 @@ impl SignalAdapter {
         }
 
         // Check profile key for recipient (determines sealed sender usage)
-        match self.manager.store().profile_key(&uuid).await {
+        let recipient_service_id = ServiceId::from(presage::libsignal_service::protocol::Aci::from(uuid));
+        match self.manager.store().profile_key(&recipient_service_id).await {
             Ok(Some(_)) => tracing::info!(
                 %uuid,
                 "SEND: profile key EXISTS for recipient — sealed sender will be attempted"
