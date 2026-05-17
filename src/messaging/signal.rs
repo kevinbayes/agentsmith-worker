@@ -220,7 +220,11 @@ impl SignalAdapter {
     }
 
     fn process_incoming(&self, content: &Content) -> Option<IncomingMessage> {
-        let sender_uuid = content.metadata.sender.raw_uuid();
+        let sender = content.metadata.sender;
+        let sender_uuid = sender.raw_uuid();
+        let our_service_id = ServiceId::from(
+            self.manager.registration_data().service_ids.aci(),
+        );
 
         // Authorization check
         if let Some(ref auth_user) = self.config.authorized_user {
@@ -237,24 +241,40 @@ impl SignalAdapter {
             }
         }
 
-        // Extract text from DataMessage or SynchronizeMessage (Note to Self / linked device sync)
+        // Extract text from Note to Self messages only.
+        // DataMessage: only process if sender is ourselves (self-sent / Note to Self).
+        // SynchronizeMessage: only process if destination is ourselves (Note to Self sync).
+        // All other messages (from other people, to other people) are ignored.
         let text = match &content.body {
             ContentBody::DataMessage(dm) => {
-                tracing::debug!("Received DataMessage from {}", sender_uuid);
+                // DataMessages from other people should not be processed —
+                // we only want Note to Self messages.
+                if sender != our_service_id {
+                    tracing::trace!(
+                        "Ignoring DataMessage from other user: {}",
+                        sender_uuid
+                    );
+                    return None;
+                }
+                tracing::debug!("Received DataMessage (Note to Self) from {}", sender_uuid);
                 dm.body.as_deref()?
             }
             ContentBody::SynchronizeMessage(sync) => {
                 // SyncMessages contain messages sent from another device on this account.
-                // Only process "Note to Self" messages (destination == sender) to avoid
+                // Only process "Note to Self" messages (destination == our ACI) to avoid
                 // intercepting messages the user sends to other people.
                 let sent = sync.sent.as_ref()?;
-                let dest = sent.destination_service_id.as_deref()?;
-                let sender_str = sender_uuid.to_string();
 
-                // destination_service_id may be prefixed (e.g. "ACI:<uuid>") or bare
-                if !dest.contains(&sender_str) {
+                // Parse destination from binary or string format (newer Signal
+                // clients may only populate the binary field).
+                let dest = presage::libsignal_service::utils::parse_service_id_with_fallback(
+                    sent.destination_service_id_binary.as_deref(),
+                    sent.destination_service_id.as_deref(),
+                )?;
+
+                if dest != our_service_id {
                     tracing::trace!(
-                        "Ignoring SyncMessage to other recipient: {}",
+                        "Ignoring SyncMessage to other recipient: {:?}",
                         dest
                     );
                     return None;
