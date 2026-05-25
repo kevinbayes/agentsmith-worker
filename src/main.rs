@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 
 use agentsmith_remote_worker::agent_mgmt::Manager as AgentMgmtManager;
 use agentsmith_remote_worker::config::Config;
+#[cfg(feature = "signal")]
 use agentsmith_remote_worker::messaging::signal;
 use agentsmith_remote_worker::messaging::slack::SlackAdapter;
 use agentsmith_remote_worker::messaging::telegram::TelegramAdapter;
@@ -29,7 +30,9 @@ struct Cli {
     #[arg(short, long, default_value = "config.toml")]
     config: PathBuf,
 
-    /// Link Signal device (one-time setup)
+    /// Link Signal device (one-time setup). Only meaningful when built with
+    /// the `signal` feature; on builds without it, passing this flag exits
+    /// with an error.
     #[arg(long)]
     link_signal: bool,
 }
@@ -59,12 +62,21 @@ async fn main() -> Result<()> {
 
     // Handle --link-signal mode
     if cli.link_signal {
-        tracing::info!("Running Signal device linking...");
-        let db_path = config.signal_db_path();
-        std::fs::create_dir_all(&db_path)?;
-        signal::link_device(&db_path, &config.signal.device_name).await?;
-        tracing::info!("Signal device linked successfully. You can now run the daemon.");
-        return Ok(());
+        #[cfg(feature = "signal")]
+        {
+            tracing::info!("Running Signal device linking...");
+            let db_path = config.signal_db_path();
+            std::fs::create_dir_all(&db_path)?;
+            signal::link_device(&db_path, &config.signal.device_name).await?;
+            tracing::info!("Signal device linked successfully. You can now run the daemon.");
+            return Ok(());
+        }
+        #[cfg(not(feature = "signal"))]
+        {
+            anyhow::bail!(
+                "--link-signal is unavailable: this build was compiled without the `signal` feature"
+            );
+        }
     }
 
     // Create cancellation token
@@ -76,6 +88,7 @@ async fn main() -> Result<()> {
     let mut outgoing_txs: Vec<mpsc::Sender<OutgoingMessage>> = Vec::new();
 
     // Start enabled adapters
+    #[cfg(feature = "signal")]
     if config.signal.enabled {
         tracing::info!("Starting Signal adapter...");
         let db_path = config.signal_db_path();
@@ -118,6 +131,12 @@ async fn main() -> Result<()> {
                 }
             });
         });
+    }
+    #[cfg(not(feature = "signal"))]
+    if config.signal.enabled {
+        tracing::warn!(
+            "[signal] enabled in config but this build was compiled without the `signal` feature — skipping Signal adapter"
+        );
     }
 
     if config.slack.enabled {

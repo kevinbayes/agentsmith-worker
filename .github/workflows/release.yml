@@ -20,18 +20,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Signal is only enabled on x86_64 Linux. The upstream
+          # presage/libsignal/spqr/SQLCipher chain doesn't build cleanly
+          # on Windows or on the cross-rs aarch64 image (whose OpenSSL is
+          # too old for SQLCipher's OpenSSL 3 API). Other targets build
+          # with --no-default-features and ship without the Signal adapter.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             tool: cargo
             ext: tar.gz
+            cargo_features: ""
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             tool: cross
             ext: tar.gz
+            cargo_features: "--no-default-features"
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             tool: cargo
             ext: zip
+            cargo_features: "--no-default-features"
 
     steps:
       - uses: actions/checkout@v4
@@ -49,40 +57,11 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       # --- Windows ---
-      - name: Install NASM (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/setup-nasm@v1
-
-      - name: Install protoc (Windows)
-        if: runner.os == 'Windows'
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "27.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup vcpkg and install SQLite + OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          vcpkg install sqlite3:x64-windows openssl:x64-windows
-          # SQLite (existing)
-          echo "SQLITE3_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
-          echo "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
-          # OpenSSL — needed by the SQLCipher-enabled libsqlite3-sys fork.
-          # The build script bundles sqlite3.c + sqlcipher and #include's
-          # <openssl/crypto.h>, then emits `cargo:rustc-link-lib=crypto`.
-          echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=C:\vcpkg\installed\x64-windows\include" >> $env:GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
-          # vcpkg's libcrypto.lib uses the `lib` prefix. MSVC's linker would
-          # search for `crypto.lib` given `-l crypto`. Drop a symlink so both
-          # names resolve.
-          if (-not (Test-Path "C:\vcpkg\installed\x64-windows\lib\crypto.lib")) {
-            Copy-Item "C:\vcpkg\installed\x64-windows\lib\libcrypto.lib" "C:\vcpkg\installed\x64-windows\lib\crypto.lib"
-          }
-          # Add the vcpkg DLL dir to PATH so the resulting .exe can find
-          # libcrypto-3-x64.dll at runtime if needed for downstream testing.
-          echo "C:\vcpkg\installed\x64-windows\bin" >> $env:GITHUB_PATH
+      # Windows builds with --no-default-features, dropping the `signal`
+      # feature so we skip the presage/libsignal/spqr/SQLCipher chain
+      # entirely. As a result Windows needs no NASM, no protoc, no vcpkg —
+      # the remaining deps (slack-morphism, teloxide, axum, reqwest) are
+      # all pure-Rust + rustls.
 
       # --- Cargo cache (native builds only) ---
       - name: Cache cargo registry and target
@@ -100,11 +79,11 @@ jobs:
       # --- Build ---
       - name: Build release (cargo)
         if: matrix.tool == 'cargo'
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
       - name: Build release (cross)
         if: matrix.tool == 'cross'
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
       # --- Package ---
       - name: Package (Linux)

@@ -1,14 +1,9 @@
-[target.aarch64-unknown-linux-gnu]
-pre-build = [
-    "dpkg --add-architecture arm64",
-    "apt-get update",
-    "apt-get install -y libsqlite3-dev:arm64 libssl-dev:arm64 cmake curl unzip",
-    # Debian's bundled protoc is too old for libsignal/spqr (predates
-    # --experimental_allow_proto3_optional, added in protoc 3.12). Download
-    # a modern release. Note: protoc runs on the BUILD HOST (x86_64) even
-    # when targeting aarch64 — it compiles .proto -> Rust before cross-cc.
-    "curl -fsSL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v27.5/protoc-27.5-linux-x86_64.zip",
-    "unzip -o /tmp/protoc.zip -d /usr/local",
-    "chmod +x /usr/local/bin/protoc",
-    "rm /tmp/protoc.zip"
-]
+# aarch64 Linux is built with --no-default-features in CI (Signal is x86_64
+# Linux only — see .github/workflows/release.yml), so the cross container
+# doesn't need libsqlite3-dev:arm64, libssl-dev:arm64, protoc, or cmake.
+# All remaining deps are pure-Rust or rustls-based and cross-compile cleanly
+# without any extra apt packages.
+#
+# Re-add a pre-build block here if you ever bring the `signal` feature back
+# for aarch64 — you'd need a newer base image (Ubuntu 22.04+) for OpenSSL 3
+# and protoc 3.12+, plus libsqlite3-dev:arm64 + libssl-dev:arm64.

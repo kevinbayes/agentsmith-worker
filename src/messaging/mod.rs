@@ -1,3 +1,4 @@
+#[cfg(feature = "signal")]
 pub mod signal;
 pub mod slack;
 pub mod telegram;

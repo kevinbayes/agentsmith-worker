@@ -3,6 +3,13 @@ name = "agentsmith-remote-worker"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["signal"]
+# Enables the Signal adapter and its heavy upstream dependency chain
+# (presage, libsignal, spqr, SQLCipher). Drop with --no-default-features on
+# targets where those dependencies don't build cleanly (e.g. Windows).
+signal = ["dep:presage", "dep:presage-store-sqlite", "dep:qr2term"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -34,11 +41,13 @@ chrono = { version = "0.4", features = ["serde"] }
 # Cron scheduling
 cron = "0.16"
 
-# Signal (presage) - upstream git (not yet published to crates.io)
-presage = { git = "https://github.com/whisperfish/presage", branch = "main" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", branch = "main" }
+# Signal (presage) - upstream git (not yet published to crates.io).
+# Gated behind the `signal` feature so non-Linux targets (Windows in CI)
+# can opt out of the presage/libsignal/spqr/SQLCipher dependency chain.
+presage = { git = "https://github.com/whisperfish/presage", branch = "main", optional = true }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", branch = "main", optional = true }
 
-qr2term = "0.3"
+qr2term = { version = "0.3", optional = true }
 
 # Slack
 slack-morphism = { version = "2", features = ["hyper"] }
@@ -55,8 +64,10 @@ portable-pty = "0.9"
 # ANSI stripping
 strip-ansi-escapes = "0.2"
 
-# HTTP client (for Anthropic API)
-reqwest = { version = "0.13", features = ["json", "form"] }
+# HTTP client (for Anthropic API). Use rustls instead of the default
+# native-tls so we don't pull in OpenSSL on non-Signal builds — keeps
+# Windows and the Linux cross-aarch64 builds free of system OpenSSL deps.
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 
 # Web server
 axum = { version = "0.8", features = ["ws"] }
