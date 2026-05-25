@@ -22,7 +22,7 @@ Supported operations:
 5. Show Claude Code settings
 
 Respond with ONLY a JSON object (no markdown fencing):
-{"action": "list_mcp|add_mcp|remove_mcp|list_permissions|show_settings", "tool": "claude|gemini", "details": "<relevant details like server name>"}"#;
+{"action": "list_mcp|add_mcp|remove_mcp|list_permissions|show_settings", "tool": "claude", "details": "<relevant details like server name>"}"#;
 
         let parsed = ctx.llm.generate(system, input).await?;
 

@@ -102,7 +102,7 @@ pub struct InteractionAgent {
     classifying: bool,
     /// Session ID for this agent.
     session_id: u64,
-    /// Tool label for context ("Claude Code" or "Gemini CLI").
+    /// Tool label for context ("Claude Code" or "ZeroClaw").
     tool_label: String,
 }
 

@@ -23,14 +23,6 @@ pub struct RunningInstance {
     pub cmd_summary: String,
 }
 
-/// Result of attempting to kill processes.
-#[derive(Debug)]
-pub struct KillResult {
-    pub tool_name: String,
-    pub killed: Vec<u32>,
-    pub failed: Vec<u32>,
-}
-
 /// Definition of a tool to monitor.
 struct ToolDef {
     name: String,
@@ -51,16 +43,6 @@ impl Monitor {
             ToolDef {
                 name: "Claude Code".to_string(),
                 binary: config.claude.binary.clone(),
-                match_node: false,
-            },
-            ToolDef {
-                name: "Gemini CLI".to_string(),
-                binary: config.gemini.binary.clone(),
-                match_node: false,
-            },
-            ToolDef {
-                name: "Goose".to_string(),
-                binary: config.goose.binary.clone(),
                 match_node: false,
             },
             ToolDef {
@@ -109,42 +91,6 @@ impl Monitor {
                 }
             })
             .collect()
-    }
-
-    /// Kill all OpenClaw processes. Returns a KillResult describing what happened.
-    pub fn kill_openclaw(&self) -> KillResult {
-        let openclaw_def = self
-            .tools
-            .iter()
-            .find(|d| d.name == "OpenClaw")
-            .expect("OpenClaw tool definition missing");
-
-        let sys = System::new_with_specifics(
-            RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-        );
-
-        let instances = self.find_processes(&sys, openclaw_def);
-        let mut killed = Vec::new();
-        let mut failed = Vec::new();
-
-        for inst in &instances {
-            let pid = sysinfo::Pid::from_u32(inst.pid);
-            if let Some(process) = sys.process(pid) {
-                if process.kill_with(sysinfo::Signal::Term).unwrap_or(false) {
-                    killed.push(inst.pid);
-                } else {
-                    failed.push(inst.pid);
-                }
-            } else {
-                failed.push(inst.pid);
-            }
-        }
-
-        KillResult {
-            tool_name: "OpenClaw".to_string(),
-            killed,
-            failed,
-        }
     }
 
     /// Produce a human-readable status report.

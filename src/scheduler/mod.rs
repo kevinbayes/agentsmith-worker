@@ -130,8 +130,8 @@ impl Scheduler {
 
         // Validate tool name
         match tool.to_lowercase().as_str() {
-            "claude" | "gemini" | "goose" | "zeroclaw" => {}
-            _ => anyhow::bail!("Unknown tool '{}'. Use claude, gemini, goose, or zeroclaw.", tool),
+            "claude" | "zeroclaw" => {}
+            _ => anyhow::bail!("Unknown tool '{}'. Use claude or zeroclaw.", tool),
         }
 
         // Expand preset aliases and validate cron expression

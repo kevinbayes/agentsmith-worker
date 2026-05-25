@@ -143,17 +143,13 @@ fn rule_match(text: &str) -> Option<Skill> {
 
     // Explicit delegation patterns
     if lower.starts_with("ask claude")
-        || lower.starts_with("ask gemini")
-        || lower.starts_with("ask goose")
         || lower.starts_with("ask zeroclaw")
         || lower.starts_with("use claude")
-        || lower.starts_with("use gemini")
-        || lower.starts_with("use goose")
         || lower.starts_with("use zeroclaw")
         || lower.starts_with("delegate to")
         || lower.starts_with("delegate ")
         || lower.starts_with("send to claude")
-        || lower.starts_with("send to gemini")
+        || lower.starts_with("send to zeroclaw")
     {
         return Some(Skill::Delegate(DelegateSkill));
     }

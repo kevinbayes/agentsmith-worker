@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use agentsmith_remote_worker::agent_mgmt::Manager as AgentMgmtManager;
 use agentsmith_remote_worker::config::Config;
 use agentsmith_remote_worker::messaging::signal;
 use agentsmith_remote_worker::messaging::slack::SlackAdapter;
@@ -159,6 +160,17 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Agent management
+    let agent_mgmt = if config.agent_management.enabled {
+        tracing::info!("Starting agent management...");
+        Some(AgentMgmtManager::new(
+            &config.agent_management,
+            &config.daemon.data_dir,
+        ))
+    } else {
+        None
+    };
+
     // Web adapter
     let status_snapshot = if config.web.enabled {
         Some(Arc::new(RwLock::new(StatusSnapshot::default())))
@@ -168,7 +180,12 @@ async fn main() -> Result<()> {
 
     if config.web.enabled {
         tracing::info!("Starting Web adapter...");
-        let adapter = WebAdapter::new(config.web.clone(), status_snapshot.clone().unwrap(), scheduler.clone());
+        let adapter = WebAdapter::new(
+            config.web.clone(),
+            status_snapshot.clone().unwrap(),
+            scheduler.clone(),
+            agent_mgmt.clone(),
+        );
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingMessage>(256);
         outgoing_txs.push(outgoing_tx);
 
@@ -187,7 +204,15 @@ async fn main() -> Result<()> {
     }
 
     // Start router
-    let router = Router::new(config, incoming_rx, outgoing_txs, cancel.clone(), status_snapshot, scheduler);
+    let router = Router::new(
+        config,
+        incoming_rx,
+        outgoing_txs,
+        cancel.clone(),
+        status_snapshot,
+        scheduler,
+        agent_mgmt,
+    );
 
     tracing::info!("AgentSmith Remote Worker is running. Press Ctrl+C to stop.");
     router.run().await?;

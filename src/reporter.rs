@@ -1,9 +1,13 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
+use tokio::sync::Mutex;
 
+use crate::agent_mgmt::protocol::{AgentCommand, AgentCommandResult};
+use crate::agent_mgmt::Manager as AgentMgmtManager;
 use crate::config::ReporterConfig;
 use crate::monitor::{Monitor, ToolInfo};
 use crate::session::{SessionManager, SessionInfo};
@@ -14,6 +18,16 @@ use crate::session::{SessionManager, SessionInfo};
 struct CommandEnvelope {
     command: &'static str,
     state_report: StateReport,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    results: Vec<AgentCommandResult>,
+}
+
+/// Response body the control plane returns to our state_report POST.
+/// Anything else in the body is ignored.
+#[derive(Debug, Deserialize, Default)]
+struct ControlPlaneResponse {
+    #[serde(default)]
+    commands: Vec<AgentCommand>,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,6 +126,9 @@ pub struct Reporter {
     last_report: Instant,
     cached_token: Option<String>,
     token_expiry: Instant,
+    /// Results from agent commands triggered by the control plane on prior
+    /// cycles. Drained and included in each outgoing envelope.
+    pending_results: Arc<Mutex<Vec<AgentCommandResult>>>,
 }
 
 impl Reporter {
@@ -166,6 +183,7 @@ impl Reporter {
             last_report: Instant::now() - interval,
             cached_token: None,
             token_expiry: Instant::now(),
+            pending_results: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -209,8 +227,14 @@ impl Reporter {
     }
 
     /// Check if it's time to report; if so, obtain a valid bearer token,
-    /// build the payload, and spawn an async POST (fire-and-forget).
-    pub async fn maybe_report(&mut self, monitor: &Monitor, session_mgr: &SessionManager) {
+    /// build the payload, send it, parse any commands the control plane
+    /// returned, and execute them in the background.
+    pub async fn maybe_report(
+        &mut self,
+        monitor: &Monitor,
+        session_mgr: &SessionManager,
+        agent_mgmt: Option<&Arc<AgentMgmtManager>>,
+    ) {
         if self.last_report.elapsed() < self.interval {
             return;
         }
@@ -226,12 +250,45 @@ impl Reporter {
 
         let report = self.build_report(monitor, session_mgr);
 
+        // Drain any pending results from prior cycles to ship with this envelope.
+        let results = {
+            let mut q = self.pending_results.lock().await;
+            std::mem::take(&mut *q)
+        };
+
         let client = self.client.clone();
         let endpoint = self.endpoint.clone();
+        let pending = self.pending_results.clone();
+        let agent_mgmt = agent_mgmt.cloned();
 
         tokio::spawn(async move {
-            if let Err(e) = Self::send_report(client, &endpoint, &token, report).await {
-                tracing::warn!("Failed to send state report: {}", e);
+            match Self::send_report(client, &endpoint, &token, report, results).await {
+                Ok(response) => {
+                    if response.commands.is_empty() {
+                        return;
+                    }
+                    let manager = match agent_mgmt {
+                        Some(m) => m,
+                        None => {
+                            tracing::warn!(
+                                "Control plane returned {} agent commands but agent management is disabled — dropping",
+                                response.commands.len()
+                            );
+                            return;
+                        }
+                    };
+                    for cmd in response.commands {
+                        let mgr = manager.clone();
+                        let queue = pending.clone();
+                        tokio::spawn(async move {
+                            let result = mgr.execute(cmd).await;
+                            queue.lock().await.push(result);
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to send state report: {}", e);
+                }
             }
         });
     }
@@ -257,10 +314,12 @@ impl Reporter {
         endpoint: &str,
         token: &str,
         report: StateReport,
-    ) -> anyhow::Result<()> {
+        results: Vec<AgentCommandResult>,
+    ) -> anyhow::Result<ControlPlaneResponse> {
         let envelope = CommandEnvelope {
             command: "state_report",
             state_report: report,
+            results,
         };
 
         let resp = client
@@ -273,8 +332,15 @@ impl Reporter {
         let status = resp.status();
         if !status.is_success() {
             tracing::warn!("Control center returned HTTP {}", status);
+            return Ok(ControlPlaneResponse::default());
         }
 
-        Ok(())
+        // The control plane may legitimately return an empty body or any
+        // unrelated JSON; treat parse failure as "no commands" rather than an
+        // error so an unrelated upgrade can't break reporting.
+        Ok(resp
+            .json::<ControlPlaneResponse>()
+            .await
+            .unwrap_or_default())
     }
 }

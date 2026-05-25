@@ -14,7 +14,7 @@ impl DelegateSkill {
     ) -> anyhow::Result<SkillOutput> {
         // Use LLM to extract the tool and task from natural language input
         let system = r#"You are a task parser. Given the user's delegation request, extract:
-1. The tool to use: "claude", "gemini", "goose", or "zeroclaw". Default to "claude" if not specified.
+1. The tool to use: "claude" or "zeroclaw". Default to "claude" if not specified.
 2. The task to send to the tool.
 
 Respond with ONLY a JSON object (no markdown fencing):

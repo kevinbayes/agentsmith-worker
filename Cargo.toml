@@ -32,7 +32,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Cron scheduling
-cron = "0.15"
+cron = "0.16"
 
 # Signal (presage) - upstream git (not yet published to crates.io)
 presage = { git = "https://github.com/whisperfish/presage", branch = "main" }
@@ -68,6 +68,17 @@ uuid = { version = "1", features = ["v4"] }
 # Process monitoring
 sysinfo = "0.38"
 which = "8"
+
+# Agent management — archive extraction & install
+tar = "0.4"
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+dirs = "5"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
 
 [patch.crates-io]
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

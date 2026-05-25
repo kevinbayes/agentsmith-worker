@@ -1,8 +1,5 @@
 pub mod claude;
 pub mod claude_prompt;
-pub mod gemini;
-pub mod gemini_prompt;
-pub mod goose_prompt;
 pub mod output_buffer;
 pub mod pty;
 pub mod zeroclaw;
@@ -18,9 +15,6 @@ use crate::config::Config;
 use crate::messaging::ThreadId;
 use crate::session::claude::ClaudeSession;
 use crate::session::claude_prompt::ClaudePromptSession;
-use crate::session::gemini::GeminiSession;
-use crate::session::gemini_prompt::GeminiPromptSession;
-use crate::session::goose_prompt::GoosePromptSession;
 use crate::session::zeroclaw::ZeroclawSession;
 use crate::session::zeroclaw_prompt::ZeroclawPromptSession;
 use crate::session::output_buffer::run_output_buffer;
@@ -32,8 +26,6 @@ pub type SessionId = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTool {
     Claude,
-    Gemini,
-    Goose,
     Zeroclaw,
 }
 
@@ -41,8 +33,6 @@ impl std::fmt::Display for SessionTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionTool::Claude => write!(f, "Claude"),
-            SessionTool::Gemini => write!(f, "Gemini"),
-            SessionTool::Goose => write!(f, "Goose"),
             SessionTool::Zeroclaw => write!(f, "ZeroClaw"),
         }
     }
@@ -52,8 +42,6 @@ impl SessionTool {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude" => Some(SessionTool::Claude),
-            "gemini" => Some(SessionTool::Gemini),
-            "goose" => Some(SessionTool::Goose),
             "zeroclaw" => Some(SessionTool::Zeroclaw),
             _ => None,
         }
@@ -62,8 +50,6 @@ impl SessionTool {
     fn tool_label(&self) -> &'static str {
         match self {
             SessionTool::Claude => "Claude Code",
-            SessionTool::Gemini => "Gemini CLI",
-            SessionTool::Goose => "Goose",
             SessionTool::Zeroclaw => "ZeroClaw",
         }
     }
@@ -100,9 +86,6 @@ pub struct SessionInfo {
 enum SessionInner {
     Claude(ClaudeSession),
     ClaudePrompt(ClaudePromptSession),
-    Gemini(GeminiSession),
-    GeminiPrompt(GeminiPromptSession),
-    GoosePrompt(GoosePromptSession),
     Zeroclaw(ZeroclawSession),
     ZeroclawPrompt(ZeroclawPromptSession),
 }
@@ -121,9 +104,6 @@ impl SessionEntry {
         match &self.inner {
             SessionInner::Claude(s) => s.interaction_agent(),
             SessionInner::ClaudePrompt(s) => s.interaction_agent(),
-            SessionInner::Gemini(s) => s.interaction_agent(),
-            SessionInner::GeminiPrompt(s) => s.interaction_agent(),
-            SessionInner::GoosePrompt(s) => s.interaction_agent(),
             SessionInner::Zeroclaw(s) => s.interaction_agent(),
             SessionInner::ZeroclawPrompt(s) => s.interaction_agent(),
         }
@@ -201,32 +181,6 @@ impl SessionManager {
                 session.start().await?;
                 SessionInner::Claude(session)
             }
-            SessionTool::Gemini if self.config.gemini.prompt_mode => {
-                // Prompt mode: no PTY, no interaction agent
-                let mut session =
-                    GeminiPromptSession::new(self.config.gemini.clone(), working_dir, raw_output_tx);
-                session.start().await?;
-                SessionInner::GeminiPrompt(session)
-            }
-            SessionTool::Gemini => {
-                let interaction = InteractionAgent::try_new(
-                    &self.config.interaction_agent,
-                    id,
-                    tool.tool_label(),
-                    self.feedback_tx.clone(),
-                );
-                let mut session =
-                    GeminiSession::new(self.config.gemini.clone(), working_dir, raw_output_tx, interaction);
-                session.start().await?;
-                SessionInner::Gemini(session)
-            }
-            SessionTool::Goose => {
-                // Goose only supports prompt mode (no PTY, no interaction agent)
-                let mut session =
-                    GoosePromptSession::new(self.config.goose.clone(), working_dir, raw_output_tx, id);
-                session.start().await?;
-                SessionInner::GoosePrompt(session)
-            }
             SessionTool::Zeroclaw if self.config.zeroclaw.prompt_mode => {
                 // Prompt mode: no PTY, no interaction agent
                 let mut session =
@@ -278,15 +232,6 @@ impl SessionManager {
             SessionInner::ClaudePrompt(session) => {
                 session.send_input(text).await?;
             }
-            SessionInner::Gemini(session) => {
-                session.send_input(text)?;
-            }
-            SessionInner::GeminiPrompt(session) => {
-                session.send_input(text).await?;
-            }
-            SessionInner::GoosePrompt(session) => {
-                session.send_input(text).await?;
-            }
             SessionInner::Zeroclaw(session) => {
                 session.send_input(text)?;
             }
@@ -314,15 +259,6 @@ impl SessionManager {
                 session.send_input(formatted_input)?;
             }
             SessionInner::ClaudePrompt(_) => {
-                anyhow::bail!("Feedback responses are not supported in prompt mode");
-            }
-            SessionInner::Gemini(session) => {
-                session.send_input(formatted_input)?;
-            }
-            SessionInner::GeminiPrompt(_) => {
-                anyhow::bail!("Feedback responses are not supported in prompt mode");
-            }
-            SessionInner::GoosePrompt(_) => {
                 anyhow::bail!("Feedback responses are not supported in prompt mode");
             }
             SessionInner::Zeroclaw(session) => {
@@ -416,16 +352,6 @@ impl SessionManager {
             if entry.status == SessionStatus::Running {
                 match &entry.inner {
                     SessionInner::ClaudePrompt(ref s) => {
-                        if !s.is_running_sync() {
-                            entry.status = SessionStatus::Idle;
-                        }
-                    }
-                    SessionInner::GeminiPrompt(ref s) => {
-                        if !s.is_running_sync() {
-                            entry.status = SessionStatus::Idle;
-                        }
-                    }
-                    SessionInner::GoosePrompt(ref s) => {
                         if !s.is_running_sync() {
                             entry.status = SessionStatus::Idle;
                         }

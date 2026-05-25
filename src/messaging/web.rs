@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent_mgmt::api::{agent_routes, AgentApiState};
+use crate::agent_mgmt::Manager as AgentMgmtManager;
 use crate::config::WebConfig;
 use crate::messaging::{IncomingMessage, OutgoingMessage, Platform, ThreadId};
 use crate::scheduler::Scheduler;
@@ -39,6 +41,15 @@ pub struct AgentSnapshotItem {
     pub installed: bool,
     pub version: Option<String>,
     pub running_count: usize,
+    /// True when the row maps to an agent_mgmt recipe (i.e. the worker can
+    /// install / update / remove the binary). False for monitor-only entries
+    /// that we merely observe on the host.
+    #[serde(default)]
+    pub managed: bool,
+    /// Recipe name to use as `AgentCommand.name` for lifecycle calls. Present
+    /// only when `managed` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_name: Option<String>,
 }
 
 /// Shared state for axum handlers.
@@ -54,6 +65,7 @@ pub struct WebAdapter {
     config: WebConfig,
     status_snapshot: Arc<RwLock<StatusSnapshot>>,
     scheduler: Option<Arc<RwLock<Scheduler>>>,
+    agent_mgmt: Option<Arc<AgentMgmtManager>>,
 }
 
 impl WebAdapter {
@@ -61,11 +73,13 @@ impl WebAdapter {
         config: WebConfig,
         status_snapshot: Arc<RwLock<StatusSnapshot>>,
         scheduler: Option<Arc<RwLock<Scheduler>>>,
+        agent_mgmt: Option<Arc<AgentMgmtManager>>,
     ) -> Self {
         Self {
             config,
             status_snapshot,
             scheduler,
+            agent_mgmt,
         }
     }
 
@@ -100,6 +114,12 @@ impl WebAdapter {
         if let Some(scheduler) = self.scheduler {
             let sched_state = ScheduleApiState { scheduler };
             app = app.merge(schedule_routes(sched_state));
+        }
+
+        // Add agent management API routes when enabled
+        if let Some(manager) = self.agent_mgmt {
+            let state = AgentApiState { manager };
+            app = app.merge(agent_routes(state));
         }
 
         let addr = format!("{}:{}", self.config.host, self.config.port);

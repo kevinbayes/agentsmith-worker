@@ -1,7 +1,6 @@
 use serde::Deserialize;
 
 use super::anthropic::AnthropicProvider;
-use super::gemini::GeminiProvider;
 use super::openai_compat::OpenAICompatProvider;
 
 /// Which LLM provider to use.
@@ -13,7 +12,6 @@ pub enum ProviderKind {
     Groq,
     Grok,
     SambaNova,
-    Gemini,
 }
 
 impl ProviderKind {
@@ -26,7 +24,6 @@ impl ProviderKind {
             "groq" => Some(Self::Groq),
             "grok" => Some(Self::Grok),
             "sambanova" | "supernova" => Some(Self::SambaNova),
-            "gemini" => Some(Self::Gemini),
             _ => None,
         }
     }
@@ -40,7 +37,6 @@ impl ProviderKind {
             Self::Groq => "llama-3.3-70b-versatile",
             Self::Grok => "grok-3-mini-fast",
             Self::SambaNova => "Meta-Llama-3.1-8B-Instruct",
-            Self::Gemini => "gemini-2.0-flash",
         }
     }
 
@@ -53,7 +49,6 @@ impl ProviderKind {
             Self::Groq => "GROQ_API_KEY",
             Self::Grok => "GROK_API_KEY",
             Self::SambaNova => "SAMBANOVA_API_KEY",
-            Self::Gemini => "GEMINI_API_KEY",
         }
     }
 
@@ -66,7 +61,6 @@ impl ProviderKind {
             Self::Groq => "https://api.groq.com/openai",
             Self::Grok => "https://api.x.ai",
             Self::SambaNova => "https://api.sambanova.ai",
-            Self::Gemini => "https://generativelanguage.googleapis.com",
         }
     }
 }
@@ -80,7 +74,6 @@ impl std::fmt::Display for ProviderKind {
             Self::Groq => write!(f, "groq"),
             Self::Grok => write!(f, "grok"),
             Self::SambaNova => write!(f, "sambanova"),
-            Self::Gemini => write!(f, "gemini"),
         }
     }
 }
@@ -165,11 +158,10 @@ impl LlmConfig {
     }
 }
 
-/// Enum-dispatched LLM provider. Wraps the three API families.
+/// Enum-dispatched LLM provider. Wraps the supported API families.
 pub enum LlmProvider {
     Anthropic(AnthropicProvider),
     OpenAICompat(OpenAICompatProvider),
-    Gemini(GeminiProvider),
 }
 
 impl LlmProvider {
@@ -198,9 +190,6 @@ impl LlmProvider {
             | ProviderKind::SambaNova => Ok(Self::OpenAICompat(OpenAICompatProvider::new(
                 api_key, model, base_url, max_tokens,
             ))),
-            ProviderKind::Gemini => Ok(Self::Gemini(GeminiProvider::new(
-                api_key, model, base_url, max_tokens,
-            ))),
         }
     }
 
@@ -209,7 +198,6 @@ impl LlmProvider {
         match self {
             Self::Anthropic(p) => p.generate(system, user).await,
             Self::OpenAICompat(p) => p.generate(system, user).await,
-            Self::Gemini(p) => p.generate(system, user).await,
         }
     }
 }

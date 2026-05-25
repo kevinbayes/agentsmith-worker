@@ -3,7 +3,7 @@
 AgentSmith Scheduler MCP Server
 
 Standalone MCP (Model Context Protocol) server that exposes AgentSmith's
-schedule management REST API as tools for Claude Code and Gemini CLI.
+schedule management REST API as tools for Claude Code.
 
 Protocol: JSON-RPC 2.0 over stdio (one JSON object per line).
 Dependencies: Python 3 stdlib only (json, os, sys, urllib.request).
@@ -137,7 +137,7 @@ TOOLS = [
                 },
                 "tool": {
                     "type": "string",
-                    "enum": ["claude", "gemini", "goose", "zeroclaw"],
+                    "enum": ["claude", "zeroclaw"],
                     "description": "Which AI CLI tool to run.",
                 },
                 "prompt": {

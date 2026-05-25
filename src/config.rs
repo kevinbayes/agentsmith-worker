@@ -1,6 +1,8 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::agent_mgmt::recipe::Recipe;
 use crate::llm::LlmConfig;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -20,10 +22,6 @@ pub struct Config {
     #[serde(default)]
     pub claude: ClaudeConfig,
     #[serde(default)]
-    pub gemini: GeminiConfig,
-    #[serde(default)]
-    pub goose: GooseConfig,
-    #[serde(default)]
     pub zeroclaw: ZeroclawConfig,
     #[serde(default)]
     pub interaction_agent: InteractionAgentConfig,
@@ -33,6 +31,8 @@ pub struct Config {
     pub agent: AgentConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub agent_management: AgentManagementConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -194,46 +194,6 @@ impl Default for ClaudeConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct GeminiConfig {
-    #[serde(default = "default_gemini_binary")]
-    pub binary: String,
-    #[serde(default)]
-    pub extra_args: Vec<String>,
-    #[serde(default)]
-    pub prompt_mode: bool,
-    #[serde(default)]
-    pub skip_permissions: bool,
-}
-
-impl Default for GeminiConfig {
-    fn default() -> Self {
-        Self {
-            binary: default_gemini_binary(),
-            extra_args: Vec::new(),
-            prompt_mode: false,
-            skip_permissions: false,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct GooseConfig {
-    #[serde(default = "default_goose_binary")]
-    pub binary: String,
-    #[serde(default)]
-    pub extra_args: Vec<String>,
-}
-
-impl Default for GooseConfig {
-    fn default() -> Self {
-        Self {
-            binary: default_goose_binary(),
-            extra_args: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
 pub struct ZeroclawConfig {
     #[serde(default = "default_zeroclaw_binary")]
     pub binary: String,
@@ -358,6 +318,42 @@ impl Default for SchedulerConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct AgentManagementConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Directory where entry-point symlinks are placed. Must be on the
+    /// operator's `$PATH` for installed agents to be invokable from any
+    /// shell. Defaults to `~/.local/bin`.
+    #[serde(default = "default_bin_dir")]
+    pub bin_dir: PathBuf,
+    /// Per-recipe overrides keyed by agent name. Overrides built-in recipes.
+    #[serde(default)]
+    pub recipes: HashMap<String, Recipe>,
+    /// Grace period between SIGTERM and SIGKILL when killing processes.
+    #[serde(default = "default_kill_grace_ms")]
+    pub kill_grace_ms: u64,
+}
+
+impl Default for AgentManagementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bin_dir: default_bin_dir(),
+            recipes: HashMap::new(),
+            kill_grace_ms: default_kill_grace_ms(),
+        }
+    }
+}
+
+fn default_bin_dir() -> PathBuf {
+    home_dir().join(".local").join("bin")
+}
+
+fn default_kill_grace_ms() -> u64 {
+    5_000
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct GcsConfig {
     pub bucket: String,
     #[serde(default)]
@@ -430,14 +426,6 @@ fn default_claude_binary() -> String {
     "claude".to_string()
 }
 
-fn default_gemini_binary() -> String {
-    "gemini".to_string()
-}
-
-fn default_goose_binary() -> String {
-    "goose".to_string()
-}
-
 fn default_zeroclaw_binary() -> String {
     "zeroclaw".to_string()
 }
@@ -479,13 +467,12 @@ impl Config {
                 web: WebConfig::default(),
                 session_defaults: SessionDefaultsConfig::default(),
                 claude: ClaudeConfig::default(),
-                gemini: GeminiConfig::default(),
-                goose: GooseConfig::default(),
                 zeroclaw: ZeroclawConfig::default(),
                 interaction_agent: InteractionAgentConfig::default(),
                 reporter: ReporterConfig::default(),
                 agent: AgentConfig::default(),
                 scheduler: SchedulerConfig::default(),
+                agent_management: AgentManagementConfig::default(),
             }
         };
 
@@ -580,19 +567,6 @@ impl Config {
             self.claude.skip_permissions = val.parse().unwrap_or(false);
         }
 
-        // Gemini overrides
-        if let Ok(val) = std::env::var("AGENTSMITH_GEMINI_PROMPT_MODE") {
-            self.gemini.prompt_mode = val.parse().unwrap_or(false);
-        }
-        if let Ok(val) = std::env::var("AGENTSMITH_GEMINI_SKIP_PERMISSIONS") {
-            self.gemini.skip_permissions = val.parse().unwrap_or(false);
-        }
-
-        // Goose overrides
-        if let Ok(val) = std::env::var("AGENTSMITH_GOOSE_BINARY") {
-            self.goose.binary = val;
-        }
-
         // ZeroClaw overrides
         if let Ok(val) = std::env::var("AGENTSMITH_ZEROCLAW_BINARY") {
             self.zeroclaw.binary = val;
@@ -675,6 +649,19 @@ impl Config {
         if let Ok(val) = std::env::var("AGENTSMITH_SCHEDULER_MAX_FAILURES") {
             if let Ok(n) = val.parse() {
                 self.scheduler.max_consecutive_failures = n;
+            }
+        }
+
+        // Agent management overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MANAGEMENT_ENABLED") {
+            self.agent_management.enabled = val.parse().unwrap_or(true);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MANAGEMENT_BIN_DIR") {
+            self.agent_management.bin_dir = PathBuf::from(val);
+        }
+        if let Ok(val) = std::env::var("AGENTSMITH_AGENT_MANAGEMENT_KILL_GRACE_MS") {
+            if let Ok(n) = val.parse() {
+                self.agent_management.kill_grace_ms = n;
             }
         }
 

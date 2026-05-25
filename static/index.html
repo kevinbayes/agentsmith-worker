@@ -42,6 +42,9 @@
   .badge-yes { background: rgba(158,206,106,0.15); color: var(--green); }
   .badge-no { background: rgba(247,118,142,0.15); color: var(--red); }
   .empty { color: var(--dim); font-style: italic; font-size: 13px; }
+  .install-btn { background: var(--accent); color: var(--bg); border: none; border-radius: 3px; padding: 2px 10px; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 11px; }
+  .install-btn:hover { opacity: 0.9; }
+  .install-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Chat panel */
   .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -219,13 +222,20 @@
         if (!data.agents || data.agents.length === 0) {
           agEl.innerHTML = '<span class="empty">No agents configured</span>';
         } else {
-          let html = '<table><tr><th>Name</th><th>Installed</th><th>Running</th></tr>';
+          let html = '<table><tr><th>Name</th><th>Installed</th><th>Running</th><th>Actions</th></tr>';
           data.agents.forEach(function(a) {
             const instBadge = a.installed
               ? '<span class="badge badge-yes">Yes</span>'
               : '<span class="badge badge-no">No</span>';
             const ver = a.version ? ' (' + a.version + ')' : '';
-            html += '<tr><td>' + a.name + ver + '</td><td>' + instBadge + '</td><td>' + a.running_count + '</td></tr>';
+            let action = '';
+            if (a.managed && !a.installed && a.command_name) {
+              action = '<button class="install-btn" data-name="'
+                + escapeAttr(a.command_name) + '">Install</button>';
+            }
+            html += '<tr><td>' + escapeHtml(a.name) + ver + '</td><td>'
+              + instBadge + '</td><td>' + a.running_count + '</td><td>'
+              + action + '</td></tr>';
           });
           html += '</table>';
           agEl.innerHTML = html;
@@ -233,6 +243,46 @@
       })
       .catch(function() {});
   }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+
+  // Delegated click handler: Install button on the agents table.
+  document.getElementById('agents-table').addEventListener('click', async function(e) {
+    const btn = e.target.closest && e.target.closest('.install-btn');
+    if (!btn) return;
+    const name = btn.dataset.name;
+    const version = window.prompt('Install ' + name + ' — version (e.g. v1.0.0):');
+    if (!version) return;
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = 'Installing…';
+    try {
+      const resp = await fetch('/api/agents/_command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, kind: { type: 'Install', version: version } }),
+      });
+      const result = await resp.json().catch(function() { return {}; });
+      if (resp.ok && result.status === 'Success') {
+        // Successful — let the 5s poll refresh the table.
+      } else {
+        alert('Install failed: ' + (result.message || resp.statusText || 'unknown error'));
+      }
+    } catch (err) {
+      alert('Install error: ' + err);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  });
 
   // Init
   connect();

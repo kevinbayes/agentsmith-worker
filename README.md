@@ -1,11 +1,11 @@
 # AgentSmith Remote Worker
 
-A daemon that bridges messaging platforms (Signal, Slack, Telegram) and a local web dashboard with AI CLI tools (Claude Code, Gemini CLI, Goose, ZeroClaw), allowing you to give tasks remotely and interact with AI sessions via chat messages.
+A daemon that bridges messaging platforms (Signal, Slack, Telegram) and a local web dashboard with AI CLI tools (Claude Code, ZeroClaw), allowing you to give tasks remotely and interact with AI sessions via chat messages.
 
 ## How It Works
 
 ```
-You (Signal/Slack/Telegram/Web) --> AgentSmith Daemon --> Claude Code / Gemini CLI / Goose / ZeroClaw
+You (Signal/Slack/Telegram/Web) --> AgentSmith Daemon --> Claude Code / ZeroClaw
                                 <-- AI responses    <--
 ```
 
@@ -28,10 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/kevinbayes/agentsmith-worker/main/i
 Before running the daemon, install the AI tools you want to use:
 
 - **Claude Code**: https://docs.anthropic.com/en/docs/claude-code/overview
-- **Gemini CLI**: https://github.com/google-gemini/gemini-cli
-- **Goose**: https://github.com/block/goose
+- **ZeroClaw**: a Claude-compatible companion CLI
 
-The daemon calls these as external commands (`claude`, `gemini`, and `goose` by default).
+The daemon calls these as external commands (`claude` and `zeroclaw` by default).
 
 ## Building from Source
 
@@ -165,7 +164,7 @@ bot_token = "xoxb-..."                 # Slack bot token
 dm_only = true                         # Only respond to direct messages
 
 [session_defaults]
-default_tool = "claude"                # "claude", "gemini", or "goose"
+default_tool = "claude"                # "claude" or "zeroclaw"
 max_sessions = 5                       # Maximum concurrent AI sessions
 output_flush_interval_ms = 500         # How often to flush output chunks
 max_chunk_size = 3000                  # Max characters per message chunk
@@ -175,7 +174,7 @@ enabled = true                         # LLM agent that detects when the CLI nee
 quiet_timeout_ms = 3000                # ms of quiet output before checking if input is needed
 
 [interaction_agent.llm]
-provider = "anthropic"                 # anthropic, openai, gemini, cerebras, groq, grok, sambanova
+provider = "anthropic"                 # anthropic, openai, cerebras, groq, grok, sambanova
 # api_key = "sk-ant-..."              # Or set ANTHROPIC_API_KEY env var (provider-specific)
 # model = "claude-haiku-4-5-20251001" # Optional, uses provider default
 max_tokens = 256                       # Max tokens for classification responses
@@ -186,20 +185,15 @@ binary = "claude"                      # Path to Claude Code binary
 prompt_mode = true                     # Use -p (print) mode instead of interactive PTY
 skip_permissions = false               # Pass --dangerously-skip-permissions
 
-[gemini]
-binary = "gemini"                      # Path to Gemini CLI binary
+[zeroclaw]
+binary = "zeroclaw"                    # Path to ZeroClaw binary
 # extra_args = []                      # Additional CLI arguments
-prompt_mode = true                     # Use non-interactive mode with -r for session resume
-skip_permissions = false               # Pass --approval-mode=yolo
-
-[goose]
-binary = "goose"                       # Path to Goose binary
-# extra_args = []                      # Additional CLI arguments
+prompt_mode = false                    # Set true for non-interactive prompt mode
 ```
 
 ### Interaction Agent
 
-The interaction agent is an LLM-powered layer that monitors CLI output and automatically detects when the AI tool (Claude Code, Gemini CLI) is waiting for user input -- such as permission prompts, yes/no confirmations, or clarification questions. When detected, it forwards the question to your chat and translates your response back into the appropriate terminal input.
+The interaction agent is an LLM-powered layer that monitors CLI output and automatically detects when the AI tool (Claude Code, ZeroClaw) is waiting for user input -- such as permission prompts, yes/no confirmations, or clarification questions. When detected, it forwards the question to your chat and translates your response back into the appropriate terminal input.
 
 **This is enabled by default** and requires an API key for the configured provider. The default provider is Anthropic. Set the API key via environment variable:
 
@@ -218,9 +212,9 @@ provider = "anthropic"
 api_key = "sk-ant-..."
 ```
 
-**Supported providers:** `anthropic`, `openai`, `gemini`, `cerebras`, `groq`, `grok`, `sambanova`
+**Supported providers:** `anthropic`, `openai`, `cerebras`, `groq`, `grok`, `sambanova`
 
-Each provider reads its API key from a provider-specific environment variable (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`) or from the `api_key` config field. To switch providers:
+Each provider reads its API key from a provider-specific environment variable (e.g. `OPENAI_API_KEY`, `GROQ_API_KEY`) or from the `api_key` config field. To switch providers:
 
 ```toml
 [interaction_agent.llm]
@@ -301,7 +295,7 @@ host = "127.0.0.1"   # Bind address (default: localhost only)
 port = 3000           # Default port
 
 [session_defaults]
-default_tool = "claude"   # or "gemini", "goose", "zeroclaw"
+default_tool = "claude"   # or "zeroclaw"
 
 [claude]
 binary = "claude"
@@ -339,7 +333,7 @@ Navigate to **http://127.0.0.1:3000** in your browser. You'll see:
 - **Left panel** -- live dashboard showing active sessions and installed AI tools
 - **Right panel** -- chat interface for interacting with AI sessions
 
-Type a message and hit Enter. A session is auto-created with your default tool. Use `/help` to see all commands, `/new gemini` to start a Gemini session, `/list` to see active sessions, etc.
+Type a message and hit Enter. A session is auto-created with your default tool. Use `/help` to see all commands, `/new zeroclaw` to start a ZeroClaw session, `/list` to see active sessions, etc.
 
 Each browser tab gets its own independent connection. To view the same session from multiple tabs, use `/switch <id>` in each tab.
 
@@ -357,7 +351,7 @@ This walks through setting up Signal from scratch so you can send a message from
 
 **Prerequisites:**
 - Signal installed on your phone
-- At least one AI CLI tool installed (`claude` or `gemini` on your PATH)
+- At least one AI CLI tool installed (`claude` or `zeroclaw` on your PATH)
 
 #### 1. Create a Signal config file
 
@@ -375,13 +369,13 @@ device_name = "agentsmith-worker"
 # authorized_user = "your-uuid"      # Optional: restrict to your Signal account UUID
 
 [session_defaults]
-default_tool = "claude"               # "claude", "gemini", or "goose"
+default_tool = "claude"               # "claude" or "zeroclaw"
 
 [interaction_agent]
 enabled = true                        # Detects when the CLI needs input and forwards to chat
 
 [interaction_agent.llm]
-provider = "anthropic"                # Or openai, gemini, groq, etc.
+provider = "anthropic"                # Or openai, groq, etc.
 # api_key = "sk-ant-..."             # Or set ANTHROPIC_API_KEY env var
 
 [claude]
@@ -454,7 +448,7 @@ This walks through setting up Slack from scratch so you can send a direct messag
 
 **Prerequisites:**
 - A Slack workspace where you have permission to create apps (or ask your workspace admin)
-- At least one AI CLI tool installed (`claude` or `gemini` on your PATH)
+- At least one AI CLI tool installed (`claude` or `zeroclaw` on your PATH)
 
 #### 1. Create a Slack App
 
@@ -518,13 +512,13 @@ bot_token = "xoxb-0000000000000-0000000000000-abc123..."   # Bot User OAuth Toke
 dm_only = true                         # Only respond to direct messages (recommended)
 
 [session_defaults]
-default_tool = "claude"               # "claude", "gemini", or "goose"
+default_tool = "claude"               # "claude" or "zeroclaw"
 
 [interaction_agent]
 enabled = true                        # Detects when the CLI needs input and forwards to chat
 
 [interaction_agent.llm]
-provider = "anthropic"                # Or openai, gemini, groq, etc.
+provider = "anthropic"                # Or openai, groq, etc.
 # api_key = "sk-ant-..."             # Or set ANTHROPIC_API_KEY env var
 
 [claude]
@@ -588,8 +582,7 @@ Once the daemon is running, send messages from the web dashboard, Signal, Slack,
 | Command | Description |
 |---|---|
 | `/new claude` | Start a new Claude Code session |
-| `/new gemini` | Start a new Gemini CLI session |
-| `/new goose` | Start a new Goose session |
+| `/new zeroclaw` | Start a new ZeroClaw session |
 | `/new zeroclaw` | Start a new ZeroClaw session |
 | `/list` | List all active sessions |
 | `/switch <id>` | Switch to a different session |
@@ -607,11 +600,11 @@ Agent:  Created Claude session #1 (now active).
 You:    Create a hello world web server in Python
 Agent:  [Claude Code response with Python code...]
 
-You:    /new gemini
-Agent:  Created Gemini session #2 (now active).
+You:    /new zeroclaw
+Agent:  Created ZeroClaw session #2 (now active).
 
 You:    Explain how async/await works in Rust
-Agent:  [Gemini response...]
+Agent:  [ZeroClaw response...]
 
 You:    /switch 1
 Agent:  Switched to session #1 (Claude).
@@ -619,7 +612,7 @@ Agent:  Switched to session #1 (Claude).
 You:    /list
 Agent:  Sessions:
         #1 Claude (idle) [active]
-        #2 Gemini (running)
+        #2 ZeroClaw (running)
 
 You:    /stop all
 Agent:  All sessions stopped.
@@ -667,17 +660,16 @@ sudo snap install agentsmith-worker --devmode
 
 ```
 Web      ──┐                              ┌── Claude Code
-Signal   ──┤                              ├── Gemini CLI
-Slack    ──┼── incoming_tx ── Router ──┼── Goose
-Telegram ──┘                              └── ZeroClaw
+Signal   ──┤                              │
+Slack    ──┼── incoming_tx ── Router ──┼── ZeroClaw
+Telegram ──┘                              │
            ◄── outgoing_tx ◄─ output ◄─┘
 ```
 
 - **Router**: Central message dispatcher, owns the `SessionManager`
 - **SessionManager**: Creates, tracks, and routes input/output for AI sessions
 - **Claude sessions**: Run in `-p` (print) mode with `--continue` for stateful conversations
-- **Gemini sessions**: Run in non-interactive prompt mode with `-r "latest"` for session resume (or interactive PTY mode)
-- **Goose sessions**: Run in prompt mode with `goose run -n <name> -t` and `-r` for session resume
+- **ZeroClaw sessions**: Run in interactive PTY mode (default) or `-p` prompt mode
 - **Output buffer**: Aggregates and chunks AI output before sending back to chat
 
 ## License

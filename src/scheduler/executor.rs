@@ -106,20 +106,6 @@ fn build_command(
             args.extend(config.claude.extra_args.clone());
             Ok((config.claude.binary.clone(), args))
         }
-        "gemini" => {
-            let mut args = vec!["-p".to_string(), prompt.to_string()];
-            args.extend(config.gemini.extra_args.clone());
-            Ok((config.gemini.binary.clone(), args))
-        }
-        "goose" => {
-            let mut args = vec![
-                "run".to_string(),
-                "-t".to_string(),
-                prompt.to_string(),
-            ];
-            args.extend(config.goose.extra_args.clone());
-            Ok((config.goose.binary.clone(), args))
-        }
         "zeroclaw" => {
             let mut args = vec!["-p".to_string(), prompt.to_string()];
             args.extend(config.zeroclaw.extra_args.clone());

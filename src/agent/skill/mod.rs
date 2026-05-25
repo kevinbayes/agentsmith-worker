@@ -78,7 +78,7 @@ impl Skill {
                  planning, or any task that doesn't require a CLI tool."
             }
             Skill::Delegate(_) => {
-                "Delegate a task to a CLI tool session (Claude Code, Gemini CLI, Goose, ZeroClaw). \
+                "Delegate a task to a CLI tool session (Claude Code, ZeroClaw). \
                  Creates or reuses a session and either hands off control or runs autonomously."
             }
             Skill::Summarize(_) => {
@@ -92,11 +92,11 @@ impl Skill {
             }
             Skill::ToolConfig(_) => {
                 "Manage MCP servers, custom commands, and permissions for CLI tools \
-                 (Claude Code, Gemini CLI). Install, remove, list, enable/disable configurations."
+                 (Claude Code). Install, remove, list, enable/disable configurations."
             }
             Skill::Schedule(_) => {
                 "Manage scheduled/recurring tasks (cron jobs). Schedule prompts to run on a cron \
-                 against a specific AI tool (Claude, Gemini, Goose, ZeroClaw). Supports add, \
+                 against a specific AI tool (Claude, ZeroClaw). Supports add, \
                  list, delete, pause, resume, and run operations."
             }
         }
@@ -123,7 +123,7 @@ impl Skill {
 pub fn skills_description() -> String {
     let skills: Vec<(&str, &str)> = vec![
         ("chat", "Direct conversation with the user. Use for general questions, brainstorming, planning, or any task that doesn't require a CLI tool."),
-        ("delegate", "Delegate a task to a CLI tool session (Claude Code, Gemini CLI, Goose, ZeroClaw). Input should describe the task to delegate and optionally the tool to use (e.g. 'use claude to refactor auth module')."),
+        ("delegate", "Delegate a task to a CLI tool session (Claude Code, ZeroClaw). Input should describe the task to delegate and optionally the tool to use (e.g. 'use claude to refactor auth module')."),
         ("summarize", "Summarize the recent output from an active CLI session. Input can optionally specify a session ID."),
         ("status", "Show system status: active sessions, tools, pending feedback. Also handles session management commands like create, stop, list."),
         ("toolconfig", "Manage MCP servers, custom commands, and permissions for CLI tools. Input describes what to install, remove, list, or configure."),

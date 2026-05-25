@@ -28,7 +28,7 @@ Respond with ONLY a JSON object (no markdown fencing):
 {
   "action": "add|list|delete|pause|resume|run|info",
   "cron": "<cron expression or preset alias>",
-  "tool": "<claude|gemini|goose|zeroclaw>",
+  "tool": "<claude|zeroclaw>",
   "prompt": "<the prompt to run>",
   "id": <schedule id number>,
   "reasoning": "<brief explanation>"

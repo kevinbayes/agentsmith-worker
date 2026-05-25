@@ -1,7 +1,7 @@
 /// Parsed user command.
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Create a new AI session: /new claude, /new gemini
+    /// Create a new AI session: /new claude, /new zeroclaw
     New { tool: String },
     /// List all sessions: /list
     List,
@@ -15,8 +15,10 @@ pub enum Command {
     Status,
     /// Monitor tool installations and processes: /monitor
     Monitor { action: MonitorAction },
-    /// Enter agent mode: /agent
+    /// Enter agent mode: /agent (no args)
     Agent,
+    /// Agent lifecycle management: /agent install ... etc.
+    AgentMgmt { action: AgentMgmtAction },
     /// Return to session mode: /session
     Session,
     /// Alias for /session: /back
@@ -27,6 +29,16 @@ pub enum Command {
     Schedule { action: ScheduleAction },
     /// Regular text to route to the active session
     Text(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum AgentMgmtAction {
+    Install { name: String, version: Option<String> },
+    Update { name: String, version: Option<String> },
+    Remove { name: String },
+    Kill { name: String, pid: Option<u32> },
+    List,
+    Status { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -109,7 +121,7 @@ pub fn parse_command(input: &str) -> Command {
             };
             Command::Stop { target }
         }
-        "/agent" => Command::Agent,
+        "/agent" => parse_agent_command(trimmed),
         "/session" => Command::Session,
         "/back" => Command::Back,
         "/clear" => Command::Clear,
@@ -133,6 +145,82 @@ pub fn parse_command(input: &str) -> Command {
         }
         "/schedule" | "/sched" | "/cron" => parse_schedule_command(trimmed),
         _ => Command::Text(trimmed.to_string()),
+    }
+}
+
+/// Distinguish `/agent` (enter agent mode) from `/agent install …` and
+/// other lifecycle subcommands.
+fn parse_agent_command(input: &str) -> Command {
+    let after_cmd = input.splitn(2, ' ').nth(1).unwrap_or("").trim();
+    if after_cmd.is_empty() {
+        return Command::Agent;
+    }
+
+    let (sub, rest) = match after_cmd.splitn(2, ' ').collect::<Vec<_>>().as_slice() {
+        [sub, rest] => (sub.to_lowercase(), rest.trim().to_string()),
+        [sub] => (sub.to_lowercase(), String::new()),
+        _ => return Command::Agent,
+    };
+
+    let name_version = || -> Option<(String, Option<String>)> {
+        let mut iter = rest.split_whitespace();
+        let name = iter.next()?.to_string();
+        let version = iter.next().map(|s| s.to_string());
+        Some((name, version))
+    };
+
+    match sub.as_str() {
+        "install" => match name_version() {
+            Some((name, version)) => Command::AgentMgmt {
+                action: AgentMgmtAction::Install { name, version },
+            },
+            None => Command::Text("Usage: /agent install <name> [version]".to_string()),
+        },
+        "update" => match name_version() {
+            Some((name, version)) => Command::AgentMgmt {
+                action: AgentMgmtAction::Update { name, version },
+            },
+            None => Command::Text("Usage: /agent update <name> [version]".to_string()),
+        },
+        "remove" | "rm" | "uninstall" => {
+            let name = rest.split_whitespace().next().unwrap_or("").to_string();
+            if name.is_empty() {
+                Command::Text("Usage: /agent remove <name>".to_string())
+            } else {
+                Command::AgentMgmt {
+                    action: AgentMgmtAction::Remove { name },
+                }
+            }
+        }
+        "kill" => {
+            let mut it = rest.split_whitespace();
+            let name = it.next().unwrap_or("").to_string();
+            let pid = it.next().and_then(|s| s.parse::<u32>().ok());
+            if name.is_empty() {
+                Command::Text("Usage: /agent kill <name> [pid]".to_string())
+            } else {
+                Command::AgentMgmt {
+                    action: AgentMgmtAction::Kill { name, pid },
+                }
+            }
+        }
+        "list" | "ls" => Command::AgentMgmt {
+            action: AgentMgmtAction::List,
+        },
+        "status" | "info" => {
+            let name = rest.split_whitespace().next().unwrap_or("").to_string();
+            if name.is_empty() {
+                Command::Text("Usage: /agent status <name>".to_string())
+            } else {
+                Command::AgentMgmt {
+                    action: AgentMgmtAction::Status { name },
+                }
+            }
+        }
+        _ => Command::Text(format!(
+            "Unknown /agent subcommand '{}'. Known: install, update, remove, kill, list, status. (No-arg /agent enters agent mode.)",
+            sub
+        )),
     }
 }
 
@@ -212,7 +300,7 @@ fn parse_schedule_command(input: &str) -> Command {
             let agent = rest.trim().to_lowercase();
             if agent.is_empty() {
                 Command::Text(
-                    "Usage: /schedule install-tool <agent>\nSupported agents: claude, gemini"
+                    "Usage: /schedule install-tool <agent>\nSupported agents: claude"
                         .to_string(),
                 )
             } else {
@@ -273,8 +361,6 @@ fn parse_schedule_add(input: &str) -> Option<ScheduleAction> {
 pub fn help_text() -> &'static str {
     r#"*AgentSmith Remote Worker Commands:*
 `/new claude` - Start a new Claude Code session
-`/new gemini` - Start a new Gemini CLI session
-`/new goose` - Start a new Goose session
 `/new zeroclaw` - Start a new ZeroClaw session
 `/list` - List all active sessions
 `/switch <id>` - Switch to a different session
@@ -284,6 +370,12 @@ pub fn help_text() -> &'static str {
 `/monitor` - Show tool installation & running processes
 `/monitor kill openclaw` - Kill OpenClaw processes
 `/agent` - Enter agent mode (AI assistant)
+`/agent install <name> [version]` - Install a managed agent (e.g. hermes-agent)
+`/agent update <name> [version]` - Update a managed agent (kills running first)
+`/agent remove <name>` - Remove a managed agent
+`/agent kill <name> [pid]` - Kill running processes for a managed agent
+`/agent list` - List known managed agents
+`/agent status <name>` - Show install + process state for one agent
 `/session` - Return to session mode (direct passthrough)
 `/back` - Alias for /session
 `/clear` - Clear agent conversation context
@@ -297,7 +389,7 @@ pub fn help_text() -> &'static str {
 `/schedule resume <id>` - Resume a paused schedule
 `/schedule run <id>` - Trigger a schedule immediately
 `/schedule info <id>` - Show schedule details
-`/schedule install-tool <agent>` - Install MCP server (claude, gemini)
+`/schedule install-tool <agent>` - Install MCP server (claude)
 Presets: `@daily`, `@hourly`, `@weekly`, `@twice-daily`, `@every-30m`, `@weekdays`
 
 `/help` - Show this help message

@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::interaction::FeedbackRequest;
 use crate::agent::orchestrator::AgentResponse;
 use crate::agent::{AgentManager, ThreadMode};
-use crate::command::{self, Command, MonitorAction, ScheduleAction, StopTarget};
+use crate::agent_mgmt::Manager as AgentMgmtManager;
+use crate::command::{self, AgentMgmtAction, Command, MonitorAction, ScheduleAction, StopTarget};
 use crate::config::Config;
 use crate::messaging::web::{AgentSnapshotItem, SessionSnapshotItem, StatusSnapshot};
 use crate::messaging::{IncomingMessage, OutgoingMessage, Platform, ThreadId};
@@ -50,6 +51,8 @@ pub struct Router {
     thread_modes: HashMap<ThreadId, ThreadMode>,
     /// Shared scheduler instance (None if scheduling is disabled).
     scheduler: Option<Arc<RwLock<Scheduler>>>,
+    /// Shared agent lifecycle manager (None if agent management disabled).
+    agent_mgmt: Option<Arc<AgentMgmtManager>>,
 }
 
 impl Router {
@@ -60,6 +63,7 @@ impl Router {
         cancel: CancellationToken,
         status_snapshot: Option<Arc<RwLock<StatusSnapshot>>>,
         scheduler: Option<Arc<RwLock<Scheduler>>>,
+        agent_mgmt: Option<Arc<AgentMgmtManager>>,
     ) -> Self {
         let session_mgr = SessionManager::new(config.clone());
         let monitor = Monitor::from_config(&config);
@@ -80,6 +84,7 @@ impl Router {
             agent_mgr,
             thread_modes: HashMap::new(),
             scheduler,
+            agent_mgmt,
         }
     }
 
@@ -135,7 +140,9 @@ impl Router {
                     self.check_feedback_timeouts().await;
                     // Report state to control center
                     if let Some(ref mut reporter) = self.reporter {
-                        reporter.maybe_report(&self.monitor, &self.session_mgr).await;
+                        reporter
+                            .maybe_report(&self.monitor, &self.session_mgr, self.agent_mgmt.as_ref())
+                            .await;
                     }
                     // Poll scheduled tasks
                     self.poll_scheduled_tasks().await;
@@ -161,8 +168,35 @@ impl Router {
                                 installed: t.installed,
                                 version: t.version.clone(),
                                 running_count: t.running_instances.len(),
+                                managed: false,
+                                command_name: None,
                             })
                             .collect();
+                        // Merge managed agents (agent_mgmt) so the dashboard
+                        // can show install / lifecycle state alongside the
+                        // monitor-discovered tools. Skip any whose binary
+                        // already appears in the monitor list.
+                        if let Some(ref mgr) = self.agent_mgmt {
+                            let existing_binaries: std::collections::HashSet<String> = snap
+                                .agents
+                                .iter()
+                                .map(|a| a.binary.clone())
+                                .collect();
+                            for s in mgr.list() {
+                                if existing_binaries.contains(&s.name) {
+                                    continue;
+                                }
+                                snap.agents.push(AgentSnapshotItem {
+                                    name: s.display_name.clone(),
+                                    binary: s.name.clone(),
+                                    installed: s.installed,
+                                    version: s.version.clone(),
+                                    running_count: s.running_pids.len(),
+                                    managed: true,
+                                    command_name: Some(s.name),
+                                });
+                            }
+                        }
                         snap.version = env!("CARGO_PKG_VERSION").to_string();
                         snap.uptime_secs = self.started_at.elapsed().as_secs();
                     }
@@ -215,6 +249,9 @@ impl Router {
             }
             Command::Schedule { action } => {
                 self.handle_schedule(&thread, action).await;
+            }
+            Command::AgentMgmt { action } => {
+                self.handle_agent_mgmt(&thread, action).await;
             }
             // Text routing depends on mode
             Command::Text(text) => {
@@ -323,7 +360,7 @@ impl Router {
                 self.send_reply(
                     thread,
                     &format!(
-                        "Unknown tool '{}'. Use `/new claude`, `/new gemini`, `/new goose`, or `/new zeroclaw`.",
+                        "Unknown tool '{}'. Use `/new claude` or `/new zeroclaw`.",
                         tool_name
                     ),
                 )
@@ -350,7 +387,7 @@ impl Router {
     async fn handle_list(&mut self, thread: &ThreadId) {
         let sessions = self.session_mgr.list_sessions();
         if sessions.is_empty() {
-            self.send_reply(thread, "No active sessions. Use `/new claude`, `/new gemini`, `/new goose`, or `/new zeroclaw` to start one.")
+            self.send_reply(thread, "No active sessions. Use `/new claude` or `/new zeroclaw` to start one.")
                 .await;
             return;
         }
@@ -459,46 +496,38 @@ impl Router {
                 self.send_reply(thread, &report).await;
             }
             MonitorAction::Kill { tool } => {
-                if tool == "openclaw" {
-                    let result = self.monitor.kill_openclaw();
-                    let mut reply = "*Kill OpenClaw:*".to_string();
-                    if result.killed.is_empty() && result.failed.is_empty() {
-                        reply.push_str("\nNo OpenClaw processes found.");
-                    } else {
-                        if !result.killed.is_empty() {
-                            reply.push_str(&format!(
-                                "\nKilled PIDs: {}",
-                                result
-                                    .killed
-                                    .iter()
-                                    .map(|p| p.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ));
-                        }
-                        if !result.failed.is_empty() {
-                            reply.push_str(&format!(
-                                "\nFailed to kill PIDs: {}",
-                                result
-                                    .failed
-                                    .iter()
-                                    .map(|p| p.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ));
-                        }
-                    }
-                    self.send_reply(thread, &reply).await;
+                let binary = if tool == "openclaw" { "openclaw" } else { tool.as_str() };
+                let grace = Duration::from_secs(5);
+                let result =
+                    crate::agent_mgmt::killer::kill_by_binary(binary, grace).await;
+                let mut reply = format!("*Kill {}:*", binary);
+                if result.none_found {
+                    reply.push_str(&format!("\nNo {} processes found.", binary));
                 } else {
-                    self.send_reply(
-                        thread,
-                        &format!(
-                            "Kill is only supported for `openclaw`. Got: '{}'",
-                            tool
-                        ),
-                    )
-                    .await;
+                    if !result.killed.is_empty() {
+                        reply.push_str(&format!(
+                            "\nKilled PIDs: {}",
+                            result
+                                .killed
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    if !result.failed.is_empty() {
+                        reply.push_str(&format!(
+                            "\nFailed to kill PIDs: {}",
+                            result
+                                .failed
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
                 }
+                self.send_reply(thread, &reply).await;
             }
         }
     }
@@ -866,6 +895,60 @@ impl Router {
         }
     }
 
+    /// Handle `/agent <subcommand>` lifecycle commands.
+    async fn handle_agent_mgmt(&self, thread: &ThreadId, action: AgentMgmtAction) {
+        let mgr = match &self.agent_mgmt {
+            Some(m) => m.clone(),
+            None => {
+                self.send_reply(
+                    thread,
+                    "Agent management is disabled. Set `agent_management.enabled = true` in config.",
+                )
+                .await;
+                return;
+            }
+        };
+
+        let cmd = match action {
+            AgentMgmtAction::Install { name, version } => crate::agent_mgmt::AgentCommand {
+                id: None,
+                name,
+                kind: crate::agent_mgmt::AgentCommandKind::Install {
+                    version,
+                    recipe_override: None,
+                },
+            },
+            AgentMgmtAction::Update { name, version } => crate::agent_mgmt::AgentCommand {
+                id: None,
+                name,
+                kind: crate::agent_mgmt::AgentCommandKind::Update { version },
+            },
+            AgentMgmtAction::Remove { name } => crate::agent_mgmt::AgentCommand {
+                id: None,
+                name,
+                kind: crate::agent_mgmt::AgentCommandKind::Remove,
+            },
+            AgentMgmtAction::Kill { name, pid } => crate::agent_mgmt::AgentCommand {
+                id: None,
+                name,
+                kind: crate::agent_mgmt::AgentCommandKind::Kill { pid },
+            },
+            AgentMgmtAction::List => crate::agent_mgmt::AgentCommand {
+                id: None,
+                name: String::new(),
+                kind: crate::agent_mgmt::AgentCommandKind::List,
+            },
+            AgentMgmtAction::Status { name } => crate::agent_mgmt::AgentCommand {
+                id: None,
+                name,
+                kind: crate::agent_mgmt::AgentCommandKind::Status,
+            },
+        };
+
+        let result = mgr.execute(cmd).await;
+        self.send_reply(thread, &format_agent_result(&result)).await;
+    }
+
     /// Poll for scheduled tasks that are due and spawn executions.
     async fn poll_scheduled_tasks(&mut self) {
         let scheduler = match &self.scheduler {
@@ -1004,15 +1087,11 @@ impl Router {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                 PathBuf::from(home).join(".claude.json")
             }
-            "gemini" => {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home).join(".gemini").join("settings.json")
-            }
             _ => {
                 self.send_reply(
                     thread,
                     &format!(
-                        "Unsupported agent '{}'. Supported: claude, gemini",
+                        "Unsupported agent '{}'. Supported: claude",
                         agent
                     ),
                 )
@@ -1105,7 +1184,6 @@ impl Router {
                 api_url,
                 match agent {
                     "claude" => "Claude Code",
-                    "gemini" => "Gemini CLI",
                     _ => agent,
                 },
             ),
@@ -1120,6 +1198,33 @@ impl Router {
             .flat_map(|s| self.session_mgr.threads_for_session(s.id))
             .collect()
     }
+}
+
+/// Format an AgentCommandResult for chat output.
+fn format_agent_result(r: &crate::agent_mgmt::AgentCommandResult) -> String {
+    let status = match r.status {
+        crate::agent_mgmt::ResultStatus::Success => "OK",
+        crate::agent_mgmt::ResultStatus::Failed => "FAIL",
+        crate::agent_mgmt::ResultStatus::InProgress => "RUNNING",
+    };
+    let header = if r.name.is_empty() {
+        format!("*Agent [{}]*: {}", status, r.message)
+    } else {
+        format!("*Agent `{}` [{}]*: {}", r.name, status, r.message)
+    };
+    // Append a one-line detail summary when there's anything useful.
+    let detail_line = match &r.details {
+        serde_json::Value::Null => String::new(),
+        v => {
+            let s = v.to_string();
+            if s.len() > 400 {
+                format!("\n```\n{}…\n```", &s[..397])
+            } else {
+                format!("\n```\n{}\n```", s)
+            }
+        }
+    };
+    format!("{}{}", header, detail_line)
 }
 
 /// Truncate a prompt string for display in listings.

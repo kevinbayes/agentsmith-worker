@@ -64,11 +64,7 @@ impl StatusSkill {
     ) -> anyhow::Result<SkillOutput> {
         // Try to extract tool name from input
         let lower = input.to_lowercase();
-        let tool = if lower.contains("gemini") {
-            SessionTool::Gemini
-        } else if lower.contains("goose") {
-            SessionTool::Goose
-        } else if lower.contains("zeroclaw") {
+        let tool = if lower.contains("zeroclaw") {
             SessionTool::Zeroclaw
         } else {
             // Default to configured default or Claude
