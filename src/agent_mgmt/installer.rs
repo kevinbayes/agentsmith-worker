@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write as _;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -283,9 +282,7 @@ fn extract(bytes: &[u8], kind: ArchiveKind, dest: &Path, recipe_name: &str) -> a
             let mut f = File::create(&file_path)
                 .with_context(|| format!("creating {}", file_path.display()))?;
             f.write_all(bytes)?;
-            let mut perms = std::fs::metadata(&file_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&file_path, perms)?;
+            set_executable(&file_path)?;
         }
     }
     Ok(())
@@ -365,11 +362,26 @@ fn ensure_executable(path: &Path) -> anyhow::Result<()> {
             path.display()
         );
     }
+    set_executable(path)?;
+    Ok(())
+}
+
+/// Mark a file executable. Unix: `chmod +x` (preserves other mode bits if
+/// any execute bit is already set). Windows: no-op (NTFS uses ACLs, and the
+/// extension determines executability for .exe/.bat/etc.).
+#[cfg(unix)]
+fn set_executable(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(path)?.permissions();
     if perms.mode() & 0o111 == 0 {
         perms.set_mode(perms.mode() | 0o755);
         std::fs::set_permissions(path, perms)?;
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -384,9 +396,27 @@ fn place_symlink(link: &Path, target: &Path) -> anyhow::Result<()> {
         std::fs::remove_file(link)
             .with_context(|| format!("removing old symlink {}", link.display()))?;
     }
-    std::os::unix::fs::symlink(target, link)
+    create_symlink(target, link)
         .with_context(|| format!("creating symlink {} -> {}", link.display(), target.display()))?;
     Ok(())
+}
+
+/// Create a symbolic link at `link` pointing to `target`.
+///
+/// Unix uses `symlink()` which works for both file and directory targets.
+/// Windows distinguishes file vs directory symlinks at creation time, and
+/// requires either administrator privileges or Developer Mode enabled. If
+/// the target doesn't exist yet (or isn't accessible at link time), we
+/// optimistically pick `symlink_file` since recipe entry points are
+/// executable files, not directories.
+#[cfg(unix)]
+fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
 }
 
 fn run_version_check(link: &Path, vc: &VersionCheck) -> Option<String> {
@@ -461,7 +491,9 @@ mod tests {
         std::fs::write(&target1, b"a").unwrap();
         std::fs::write(&target2, b"b").unwrap();
         let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&target1, &link).unwrap();
+        // Use the same cross-platform helper the production code uses so the
+        // test compiles on both Unix and Windows.
+        create_symlink(&target1, &link).unwrap();
         place_symlink(&link, &target2).unwrap();
         let resolved = std::fs::read_link(&link).unwrap();
         assert_eq!(resolved, target2);
