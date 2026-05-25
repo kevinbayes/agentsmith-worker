@@ -2,7 +2,7 @@
 pre-build = [
     "dpkg --add-architecture arm64",
     "apt-get update",
-    "apt-get install -y libsqlite3-dev:arm64 cmake curl unzip",
+    "apt-get install -y libsqlite3-dev:arm64 libssl-dev:arm64 cmake curl unzip",
     # Debian's bundled protoc is too old for libsignal/spqr (predates
     # --experimental_allow_proto3_optional, added in protoc 3.12). Download
     # a modern release. Note: protoc runs on the BUILD HOST (x86_64) even

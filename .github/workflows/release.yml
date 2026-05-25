@@ -60,13 +60,29 @@ jobs:
           version: "27.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup vcpkg and install SQLite (Windows)
+      - name: Setup vcpkg and install SQLite + OpenSSL (Windows)
         if: runner.os == 'Windows'
         run: |
-          vcpkg install sqlite3:x64-windows
+          vcpkg install sqlite3:x64-windows openssl:x64-windows
+          # SQLite (existing)
           echo "SQLITE3_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
           echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
           echo "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
+          # OpenSSL — needed by the SQLCipher-enabled libsqlite3-sys fork.
+          # The build script bundles sqlite3.c + sqlcipher and #include's
+          # <openssl/crypto.h>, then emits `cargo:rustc-link-lib=crypto`.
+          echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=C:\vcpkg\installed\x64-windows\include" >> $env:GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
+          # vcpkg's libcrypto.lib uses the `lib` prefix. MSVC's linker would
+          # search for `crypto.lib` given `-l crypto`. Drop a symlink so both
+          # names resolve.
+          if (-not (Test-Path "C:\vcpkg\installed\x64-windows\lib\crypto.lib")) {
+            Copy-Item "C:\vcpkg\installed\x64-windows\lib\libcrypto.lib" "C:\vcpkg\installed\x64-windows\lib\crypto.lib"
+          }
+          # Add the vcpkg DLL dir to PATH so the resulting .exe can find
+          # libcrypto-3-x64.dll at runtime if needed for downstream testing.
+          echo "C:\vcpkg\installed\x64-windows\bin" >> $env:GITHUB_PATH
 
       # --- Cargo cache (native builds only) ---
       - name: Cache cargo registry and target
