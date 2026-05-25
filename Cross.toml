@@ -2,5 +2,13 @@
 pre-build = [
     "dpkg --add-architecture arm64",
     "apt-get update",
-    "apt-get install -y libsqlite3-dev:arm64 cmake protobuf-compiler"
+    "apt-get install -y libsqlite3-dev:arm64 cmake curl unzip",
+    # Debian's bundled protoc is too old for libsignal/spqr (predates
+    # --experimental_allow_proto3_optional, added in protoc 3.12). Download
+    # a modern release. Note: protoc runs on the BUILD HOST (x86_64) even
+    # when targeting aarch64 — it compiles .proto -> Rust before cross-cc.
+    "curl -fsSL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v27.5/protoc-27.5-linux-x86_64.zip",
+    "unzip -o /tmp/protoc.zip -d /usr/local",
+    "chmod +x /usr/local/bin/protoc",
+    "rm /tmp/protoc.zip"
 ]
