@@ -2,5 +2,5 @@
 pre-build = [
     "dpkg --add-architecture arm64",
     "apt-get update",
-    "apt-get install -y libsqlite3-dev:arm64 cmake"
+    "apt-get install -y libsqlite3-dev:arm64 cmake protobuf-compiler"
 ]
