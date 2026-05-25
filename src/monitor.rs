@@ -55,6 +55,22 @@ impl Monitor {
                 binary: "openclaw".to_string(),
                 match_node: true,
             },
+            ToolDef {
+                name: "OpenAI Codex".to_string(),
+                binary: "codex".to_string(),
+                // Original CLI ships as @openai/codex on npm (Node-based); the
+                // newer Rust port runs as a plain `codex` binary. match_node
+                // covers both — pure-Rust matches on basename, Node-based
+                // matches via argv scan.
+                match_node: true,
+            },
+            ToolDef {
+                name: "Antigravity CLI".to_string(),
+                binary: "agy".to_string(),
+                // Google's Antigravity CLI (Gemini CLI's successor) ships as
+                // a Node-based npm package, so match argv too.
+                match_node: true,
+            },
         ];
         Self { tools }
     }
