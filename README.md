@@ -652,9 +652,74 @@ sudo journalctl -u agentsmith-worker -f   # View logs
 
 ### Linux (Snap)
 
+The repository ships a `snapcraft.yaml` that packages the worker as a systemd-managed snap. Install it, write a config file, and you're done — the daemon auto-starts on install and again on every reboot.
+
+#### Install
+
+Once the snap is published you can install from the Snap Store:
+
 ```bash
-sudo snap install agentsmith-worker --devmode
+sudo snap install agentsmith-worker
 ```
+
+To build and install locally from source:
+
+```bash
+sudo snap install snapcraft --classic
+cd agentsmith-worker
+snapcraft pack                       # produces agentsmith-worker_<version>_amd64.snap
+sudo snap install ./agentsmith-worker_*_amd64.snap --devmode --dangerous
+```
+
+`--devmode --dangerous` is required because the snap is `grade: devel` / `confinement: devmode` today. Move to `--classic` or strict confinement once the apparmor profile is sorted.
+
+#### Configure
+
+The snap reads its config from `/var/snap/agentsmith-worker/common/config.toml`. That path survives `snap refresh` and `snap revert`. On first install no config exists, so the daemon starts but does nothing useful — adapters default to disabled.
+
+Seed the config from the sample shipped in the repo and edit it:
+
+```bash
+sudo mkdir -p /var/snap/agentsmith-worker/common
+sudo cp config-sample.toml /var/snap/agentsmith-worker/common/config.toml
+sudo $EDITOR /var/snap/agentsmith-worker/common/config.toml
+sudo snap restart agentsmith-worker
+```
+
+At minimum enable one messaging adapter (Signal/Slack/Telegram/Web) and set an `[interaction_agent.llm]` API key.
+
+#### Operate the service
+
+```bash
+sudo snap services agentsmith-worker          # show enabled / active state
+sudo snap start    agentsmith-worker
+sudo snap stop     agentsmith-worker          # clean stop, no restart fires
+sudo snap restart  agentsmith-worker
+sudo snap disable  agentsmith-worker          # stop and don't restart on boot
+sudo snap enable   agentsmith-worker
+sudo snap logs     agentsmith-worker -f       # follow logs (journald-backed)
+```
+
+Under the hood snapd registers a systemd unit `snap.agentsmith-worker.agentsmith-worker.service`. `restart-condition: on-failure` and `restart-delay: 5s` are set, so a crash recovers automatically but a clean shutdown stays down.
+
+#### Signal device linking
+
+If you want the Signal adapter, you have to link a device first. With the snap installed, stop the daemon, run the one-shot link command from a normal shell (it needs an interactive QR scan), then restart the service:
+
+```bash
+sudo snap stop  agentsmith-worker
+agentsmith-worker --link-signal      # follow the QR / "linked devices" flow
+sudo snap start agentsmith-worker
+```
+
+The Signal session DB lands in `/var/snap/agentsmith-worker/common/signal-db/` by default and persists across refreshes.
+
+#### Gotchas
+
+- **The service runs as root.** That means `~/.local/bin` (the default `[agent_management] bin_dir`) resolves to `/root/.local/bin`, not your user's home. If you want installed agent binaries on your shell's PATH, set `bin_dir` to a host path you control and add it to PATH.
+- **`home` plug only.** Under strict confinement the daemon can read files under your user's `$HOME` but not `/etc/...`. Under `devmode` (the current default) confinement is off entirely.
+- **`snap refresh` keeps your config.** `$SNAP_COMMON` survives revisions; only `$SNAP_DATA` does not. We deliberately use the former.
+- **First-time LXD build problems?** If `snapcraft pack` complains about LXD permissions, run `sudo usermod -aG lxd $USER && newgrp lxd && lxd init --auto`. If the build VM can't reach the network, your host probably has Docker installed and its iptables rules drop forwarded traffic on `lxdbr0`: `sudo iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && sudo iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT`. To skip LXD entirely, `snapcraft pack --destructive-mode` builds directly on your host.
 
 ## Architecture
 

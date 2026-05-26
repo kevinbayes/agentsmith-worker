@@ -1,33 +1,47 @@
-name: agentsmith-worker # you probably want to 'snapcraft register <name>'
-base: core24 # the base snap is the execution environment for this snap
-version: '0.1' # just for humans, typically '1.2+git' or '1.3.2'
-summary: AgentSmith Remote Worker - Bridge messaging platforms with AI CLI tools.
+name: agentsmith-worker
+base: core24
+version: '0.1.0'
+summary: Bridge messaging platforms with AI CLI tools
 description: |
-  A daemon that bridges messaging platforms (Signal, Slack) with AI CLI tools
-  (Claude Code, Gemini CLI), allowing a single user to give tasks remotely
-  and interact with AI sessions via chat messages.
+  A daemon that bridges messaging platforms (Signal, Slack, Telegram) and a
+  local web dashboard with AI CLI tools (Claude Code, ZeroClaw), allowing
+  you to give tasks remotely and interact with AI sessions via chat
+  messages. Also manages the hermes-agent binary lifecycle (install /
+  update / remove / kill) on the host.
+license: MIT
+source-code: https://github.com/kevinbayes/agentsmith-worker
+issues: https://github.com/kevinbayes/agentsmith-worker/issues
 
-grade: devel # must be 'stable' to release into candidate/stable channels
-confinement: devmode # use 'strict' once you have the right plugs and slots
+grade: devel          # set 'stable' to release into candidate/stable channels
+confinement: devmode  # tighten to 'strict' once the right plugs are sorted
+
+# Build x86_64 only for now. Cross builds work via the release workflow but
+# the snap recipe assumes x86_64 paths (PKG_CONFIG_PATH etc.).
+platforms:
+  amd64:
 
 parts:
   agentsmith-worker:
     plugin: rust
     source: .
     build-packages:
-      # Essential build dependencies
+      # General Rust toolchain prerequisites
       - build-essential
       - pkg-config
-      - libssl-dev
-      - openssl
-      - perl  # Sometimes needed for OpenSSL build scripts
-      - libsqlite3-dev
-      - cmake
       - clang
+      - cmake
+      # Signal feature chain: libsignal/spqr build.rs invokes protoc, and
+      # the patched libsqlite3-sys forks SQLCipher which links libcrypto.
+      - protobuf-compiler
+      - libssl-dev
+      - libsqlite3-dev
+      # OpenSSL build scripts sometimes need perl
+      - perl
 
-    # Add runtime dependencies
+    # Runtime dynamic libraries pulled into the snap so the binary can
+    # find them when the host doesn't ship them at the right ABI level.
     stage-packages:
-      - libssl3
+      - libssl3t64
       - libsqlite3-0
 
     build-environment:
@@ -38,18 +52,30 @@ parts:
       - OPENSSL_STATIC: "false"
 
     override-build: |
+      # Build with the default feature set (Signal enabled — Linux native is
+      # where the presage chain works). --locked forces Cargo.lock as-is so
+      # snap builds are reproducible.
+      cargo build --release --locked
 
-      export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
-
-      cargo build --release --workspace
-
-      mkdir -p $CRAFT_PART_INSTALL/bin
-
-      cp ./target/release/agentsmith-remote-worker $CRAFT_PART_INSTALL/bin/
+      install -D -m 0755 ./target/release/agentsmith-remote-worker \
+        $CRAFT_PART_INSTALL/bin/agentsmith-remote-worker
 
 apps:
   agentsmith-worker:
-    command: bin/agentsmith-remote-worker
+    # Run from a stable config path that survives snap refreshes.
+    # $SNAP_USER_COMMON resolves to ~/snap/agentsmith-worker/common/ — owned
+    # by the logged-in user, persistent across refreshes.
+    command: bin/agentsmith-remote-worker --config $SNAP_USER_COMMON/config.toml
+    # Daemonize per-user: snapd registers a systemd --user unit
+    # (`snap.agentsmith-worker.agentsmith-worker.service`) under each
+    # logged-in user's session. The daemon then sees the *user's* real
+    # $HOME, can read ~/.claude.json / ~/.gemini/, and can install agent
+    # binaries into ~/.local/bin like the user would by hand.
+    daemon: simple
+    daemon-scope: user
+    install-mode: enable
+    restart-condition: on-failure
+    restart-delay: 5s
     plugs:
       - network
       - network-bind
