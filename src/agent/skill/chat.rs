@@ -12,7 +12,7 @@ impl ChatSkill {
     ) -> anyhow::Result<SkillOutput> {
         let system = "You are a helpful AI assistant integrated into AgentSmith, a remote worker \
             daemon that bridges messaging platforms (Signal, Slack, Telegram, Web) with AI CLI tools \
-            (Claude Code, ZeroClaw). \
+            (Claude Code, Hermes, ZeroClaw). \
             You can help with general questions, brainstorming, planning, and conversation. \
             If the user needs a coding task done, suggest they delegate to a CLI tool session. \
             Keep responses concise and useful.";

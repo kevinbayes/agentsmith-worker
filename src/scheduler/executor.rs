@@ -106,6 +106,15 @@ fn build_command(
             args.extend(config.claude.extra_args.clone());
             Ok((config.claude.binary.clone(), args))
         }
+        "hermes" => {
+            let mut args = vec![
+                "chat".to_string(),
+                "-q".to_string(),
+                prompt.to_string(),
+            ];
+            args.extend(config.hermes.extra_args.clone());
+            Ok((config.hermes.binary.clone(), args))
+        }
         "zeroclaw" => {
             let mut args = vec!["-p".to_string(), prompt.to_string()];
             args.extend(config.zeroclaw.extra_args.clone());

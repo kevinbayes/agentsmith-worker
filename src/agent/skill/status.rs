@@ -66,6 +66,8 @@ impl StatusSkill {
         let lower = input.to_lowercase();
         let tool = if lower.contains("zeroclaw") {
             SessionTool::Zeroclaw
+        } else if lower.contains("hermes") {
+            SessionTool::Hermes
         } else {
             // Default to configured default or Claude
             SessionTool::from_str(&ctx.config.session_defaults.default_tool)

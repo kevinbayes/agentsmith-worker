@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod claude_prompt;
+pub mod hermes_prompt;
 pub mod output_buffer;
 pub mod pty;
 pub mod zeroclaw;
@@ -15,6 +16,7 @@ use crate::config::Config;
 use crate::messaging::ThreadId;
 use crate::session::claude::ClaudeSession;
 use crate::session::claude_prompt::ClaudePromptSession;
+use crate::session::hermes_prompt::HermesPromptSession;
 use crate::session::zeroclaw::ZeroclawSession;
 use crate::session::zeroclaw_prompt::ZeroclawPromptSession;
 use crate::session::output_buffer::run_output_buffer;
@@ -26,6 +28,7 @@ pub type SessionId = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTool {
     Claude,
+    Hermes,
     Zeroclaw,
 }
 
@@ -33,6 +36,7 @@ impl std::fmt::Display for SessionTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionTool::Claude => write!(f, "Claude"),
+            SessionTool::Hermes => write!(f, "Hermes"),
             SessionTool::Zeroclaw => write!(f, "ZeroClaw"),
         }
     }
@@ -42,6 +46,7 @@ impl SessionTool {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude" => Some(SessionTool::Claude),
+            "hermes" => Some(SessionTool::Hermes),
             "zeroclaw" => Some(SessionTool::Zeroclaw),
             _ => None,
         }
@@ -50,6 +55,7 @@ impl SessionTool {
     fn tool_label(&self) -> &'static str {
         match self {
             SessionTool::Claude => "Claude Code",
+            SessionTool::Hermes => "Hermes",
             SessionTool::Zeroclaw => "ZeroClaw",
         }
     }
@@ -86,6 +92,7 @@ pub struct SessionInfo {
 enum SessionInner {
     Claude(ClaudeSession),
     ClaudePrompt(ClaudePromptSession),
+    HermesPrompt(HermesPromptSession),
     Zeroclaw(ZeroclawSession),
     ZeroclawPrompt(ZeroclawPromptSession),
 }
@@ -104,6 +111,7 @@ impl SessionEntry {
         match &self.inner {
             SessionInner::Claude(s) => s.interaction_agent(),
             SessionInner::ClaudePrompt(s) => s.interaction_agent(),
+            SessionInner::HermesPrompt(s) => s.interaction_agent(),
             SessionInner::Zeroclaw(s) => s.interaction_agent(),
             SessionInner::ZeroclawPrompt(s) => s.interaction_agent(),
         }
@@ -181,6 +189,17 @@ impl SessionManager {
                 session.start().await?;
                 SessionInner::Claude(session)
             }
+            SessionTool::Hermes => {
+                // Hermes is one-shot per query via `hermes chat -q "..."`,
+                // no PTY, no interaction agent.
+                let mut session = HermesPromptSession::new(
+                    self.config.hermes.clone(),
+                    working_dir,
+                    raw_output_tx,
+                );
+                session.start().await?;
+                SessionInner::HermesPrompt(session)
+            }
             SessionTool::Zeroclaw if self.config.zeroclaw.prompt_mode => {
                 // Prompt mode: no PTY, no interaction agent
                 let mut session =
@@ -232,6 +251,9 @@ impl SessionManager {
             SessionInner::ClaudePrompt(session) => {
                 session.send_input(text).await?;
             }
+            SessionInner::HermesPrompt(session) => {
+                session.send_input(text).await?;
+            }
             SessionInner::Zeroclaw(session) => {
                 session.send_input(text)?;
             }
@@ -259,6 +281,9 @@ impl SessionManager {
                 session.send_input(formatted_input)?;
             }
             SessionInner::ClaudePrompt(_) => {
+                anyhow::bail!("Feedback responses are not supported in prompt mode");
+            }
+            SessionInner::HermesPrompt(_) => {
                 anyhow::bail!("Feedback responses are not supported in prompt mode");
             }
             SessionInner::Zeroclaw(session) => {
@@ -352,6 +377,11 @@ impl SessionManager {
             if entry.status == SessionStatus::Running {
                 match &entry.inner {
                     SessionInner::ClaudePrompt(ref s) => {
+                        if !s.is_running_sync() {
+                            entry.status = SessionStatus::Idle;
+                        }
+                    }
+                    SessionInner::HermesPrompt(ref s) => {
                         if !s.is_running_sync() {
                             entry.status = SessionStatus::Idle;
                         }

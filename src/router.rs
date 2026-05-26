@@ -360,7 +360,7 @@ impl Router {
                 self.send_reply(
                     thread,
                     &format!(
-                        "Unknown tool '{}'. Use `/new claude` or `/new zeroclaw`.",
+                        "Unknown tool '{}'. Use `/new claude`, `/new hermes`, or `/new zeroclaw`.",
                         tool_name
                     ),
                 )
@@ -387,7 +387,7 @@ impl Router {
     async fn handle_list(&mut self, thread: &ThreadId) {
         let sessions = self.session_mgr.list_sessions();
         if sessions.is_empty() {
-            self.send_reply(thread, "No active sessions. Use `/new claude` or `/new zeroclaw` to start one.")
+            self.send_reply(thread, "No active sessions. Use `/new claude`, `/new hermes`, or `/new zeroclaw` to start one.")
                 .await;
             return;
         }

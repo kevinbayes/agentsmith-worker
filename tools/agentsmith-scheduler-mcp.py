@@ -137,7 +137,7 @@ TOOLS = [
                 },
                 "tool": {
                     "type": "string",
-                    "enum": ["claude", "zeroclaw"],
+                    "enum": ["claude", "hermes", "zeroclaw"],
                     "description": "Which AI CLI tool to run.",
                 },
                 "prompt": {

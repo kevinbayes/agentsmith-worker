@@ -1,7 +1,7 @@
 /// Parsed user command.
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Create a new AI session: /new claude, /new zeroclaw
+    /// Create a new AI session: /new claude, /new hermes, /new zeroclaw
     New { tool: String },
     /// List all sessions: /list
     List,
@@ -361,6 +361,7 @@ fn parse_schedule_add(input: &str) -> Option<ScheduleAction> {
 pub fn help_text() -> &'static str {
     r#"*AgentSmith Remote Worker Commands:*
 `/new claude` - Start a new Claude Code session
+`/new hermes` - Start a new Hermes session (one-shot queries via `hermes chat -q`)
 `/new zeroclaw` - Start a new ZeroClaw session
 `/list` - List all active sessions
 `/switch <id>` - Switch to a different session

@@ -22,6 +22,8 @@ pub struct Config {
     #[serde(default)]
     pub claude: ClaudeConfig,
     #[serde(default)]
+    pub hermes: HermesConfig,
+    #[serde(default)]
     pub zeroclaw: ZeroclawConfig,
     #[serde(default)]
     pub interaction_agent: InteractionAgentConfig,
@@ -191,6 +193,27 @@ impl Default for ClaudeConfig {
             skip_permissions: false,
         }
     }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HermesConfig {
+    #[serde(default = "default_hermes_binary")]
+    pub binary: String,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+impl Default for HermesConfig {
+    fn default() -> Self {
+        Self {
+            binary: default_hermes_binary(),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+fn default_hermes_binary() -> String {
+    "hermes".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -467,6 +490,7 @@ impl Config {
                 web: WebConfig::default(),
                 session_defaults: SessionDefaultsConfig::default(),
                 claude: ClaudeConfig::default(),
+                hermes: HermesConfig::default(),
                 zeroclaw: ZeroclawConfig::default(),
                 interaction_agent: InteractionAgentConfig::default(),
                 reporter: ReporterConfig::default(),
@@ -565,6 +589,11 @@ impl Config {
         }
         if let Ok(val) = std::env::var("AGENTSMITH_CLAUDE_SKIP_PERMISSIONS") {
             self.claude.skip_permissions = val.parse().unwrap_or(false);
+        }
+
+        // Hermes overrides
+        if let Ok(val) = std::env::var("AGENTSMITH_HERMES_BINARY") {
+            self.hermes.binary = val;
         }
 
         // ZeroClaw overrides
