@@ -19,8 +19,17 @@ pub fn recipe() -> Recipe {
             checksum: None,
         },
         entry_points: vec![EntryPoint {
-            relative_path: "hermes-agent".to_string(),
-            symlink_name: "hermes-agent".to_string(),
+            // The upstream binary is just `hermes`. Inside our managed
+            // payload it lives at the root of the extracted archive.
+            relative_path: "hermes".to_string(),
+            symlink_name: "hermes".to_string(),
+            // Where the upstream installer drops the binary when run by
+            // hand. Lets us mark hermes "installed" without requiring it
+            // to be on `$PATH`.
+            discovery_paths: vec![
+                "~/.hermes/hermes-agent/hermes".to_string(),
+                "~/.hermes/bin/hermes".to_string(),
+            ],
         }],
         version_check: Some(VersionCheck {
             args: vec!["--version".to_string()],

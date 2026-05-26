@@ -133,28 +133,47 @@ impl Manager {
     fn summarize(&self, name: &str) -> AgentSummary {
         let resolved = self.registry.resolve(name, None);
         let payload = self.payload_dir(name);
-        let installed = payload.exists();
+        let payload_present = payload.exists();
         let recipe = resolved.as_ref().map(|(r, _)| r);
         let display_name = recipe
             .map(|r| r.display_name.clone())
             .unwrap_or_else(|| name.to_string());
 
+        // Locate the binary. Three checks, in priority order:
+        //   1. Worker-managed symlink at <bin_dir>/<symlink_name> — present
+        //      only when this worker installed the agent.
+        //   2. Recipe entry-point name on the operator's $PATH — catches
+        //      external installs (cargo install, system package, manual).
+        //   3. None — agent is not installed.
         let (symlink_path, version) = if let Some(r) = recipe {
-            let primary = r
-                .entry_points
-                .first()
-                .map(|ep| self.bin_dir.join(&ep.symlink_name));
-            let version = primary.as_ref().and_then(|p| {
-                if p.exists() {
-                    detect_version(p)
-                } else {
-                    None
+            let mut found: Option<PathBuf> = None;
+            'eps: for ep in &r.entry_points {
+                let managed = self.bin_dir.join(&ep.symlink_name);
+                if managed.exists() {
+                    found = Some(managed);
+                    break;
                 }
-            });
-            (primary, version)
+                if let Ok(on_path) = which::which(&ep.symlink_name) {
+                    found = Some(on_path);
+                    break;
+                }
+                for hint in &ep.discovery_paths {
+                    let expanded = expand_home(hint);
+                    if expanded.exists() {
+                        found = Some(expanded);
+                        break 'eps;
+                    }
+                }
+            }
+            let version = found.as_ref().and_then(|p| detect_version(p));
+            (found, version)
         } else {
             (None, None)
         };
+
+        // "Installed" if we have either a worker-managed payload or a
+        // discoverable binary anywhere on PATH.
+        let installed = payload_present || symlink_path.is_some();
 
         let running_pids = recipe
             .map(|r| collect_running_pids(r))
@@ -165,8 +184,8 @@ impl Manager {
             display_name,
             installed,
             version,
-            payload_path: if installed { Some(payload) } else { None },
-            symlink_path: symlink_path.filter(|p| p.exists()),
+            payload_path: if payload_present { Some(payload) } else { None },
+            symlink_path,
             running_pids,
             recipe_source: resolved.map(|(_, src)| src),
         }
@@ -396,11 +415,16 @@ fn detect_version(binary: &Path) -> Option<String> {
 }
 
 fn expand_bin_dir(p: &Path) -> PathBuf {
-    let s = p.to_string_lossy();
+    expand_home(&p.to_string_lossy())
+}
+
+/// Expand a leading `~/` in a string to the daemon user's home directory.
+/// Returns the path unchanged if no expansion applies.
+fn expand_home(s: &str) -> PathBuf {
     if let Some(stripped) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(stripped);
         }
     }
-    p.to_path_buf()
+    PathBuf::from(s)
 }

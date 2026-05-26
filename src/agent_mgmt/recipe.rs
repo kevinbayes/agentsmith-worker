@@ -23,6 +23,13 @@ pub struct Recipe {
 pub struct EntryPoint {
     pub relative_path: String,
     pub symlink_name: String,
+    /// Extra paths to probe when detecting an externally-installed copy of
+    /// the binary — useful when the upstream installer drops the binary in
+    /// its own convention (e.g. `~/.hermes/hermes-agent/hermes`) rather
+    /// than on the user's `$PATH`. Leading `~/` is expanded to the home
+    /// directory of the user running the daemon.
+    #[serde(default)]
+    pub discovery_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

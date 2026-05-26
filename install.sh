@@ -312,7 +312,11 @@ print_summary() {
     else
         echo "    journalctl --user -fu ${SERVICE_NAME}"
         echo ""
-        if ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
+        # Linger state lives at /var/lib/systemd/linger/<user>. systemd creates
+        # this file when `loginctl enable-linger` is run. `loginctl show-user`
+        # only emits Linger=yes for users with active sessions, so the file
+        # check is the reliable signal.
+        if [[ ! -f "/var/lib/systemd/linger/${USER}" ]]; then
             warn "User-mode services stop when you log out."
             echo "  To keep the daemon running across logouts/reboots:"
             echo "    sudo loginctl enable-linger \$USER"
@@ -354,9 +358,11 @@ main() {
     local archive_name="${BINARY_NAME}-${VERSION}-${target}.${ext}"
     local download_url="https://github.com/${REPO}/releases/download/${VERSION}/${archive_name}"
 
-    local tmpdir
+    # NOTE: tmpdir must be a global (not `local`) because the EXIT trap fires
+    # after main() returns, by which point a local would be out of scope and
+    # `set -u` would treat $tmpdir as unbound.
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    trap 'rm -rf "${tmpdir:-}"' EXIT
 
     info "Downloading ${download_url}"
     if ! curl -fsSL -o "${tmpdir}/${archive_name}" "$download_url"; then
