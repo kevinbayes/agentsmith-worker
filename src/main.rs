@@ -204,6 +204,7 @@ async fn main() -> Result<()> {
             status_snapshot.clone().unwrap(),
             scheduler.clone(),
             agent_mgmt.clone(),
+            config.hermes.binary.clone(),
         );
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingMessage>(256);
         outgoing_txs.push(outgoing_tx);

@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_mgmt;
 pub mod command;
+pub mod hermes;
 pub mod config;
 pub mod error;
 pub mod llm;

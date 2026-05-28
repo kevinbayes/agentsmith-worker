@@ -1,17 +1,12 @@
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::config::HermesConfig;
-
-/// Hermes typically installs to `~/.hermes/hermes-agent/hermes` via its own
-/// installer. Keep this list in sync with the discovery_paths declared on
-/// the built-in agent_mgmt recipe in `agent_mgmt/builtin/hermes.rs`.
-const HERMES_FALLBACK_PATHS: &[&str] =
-    &["~/.hermes/hermes-agent/hermes", "~/.hermes/bin/hermes"];
+use crate::hermes::resolve_binary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptState {
@@ -35,8 +30,10 @@ pub struct HermesPromptSession {
     state: Arc<Mutex<PromptState>>,
     current_task: Option<JoinHandle<()>>,
     /// Absolute path to the hermes binary, resolved once at session creation.
-    /// Populated by `start()`.
     resolved_binary: Option<PathBuf>,
+    /// If set, exported as `HERMES_PROFILE` on every spawn — pins the
+    /// session to a specific hermes profile (model/provider/skill combo).
+    profile: Option<String>,
 }
 
 impl HermesPromptSession {
@@ -45,6 +42,15 @@ impl HermesPromptSession {
         working_dir: PathBuf,
         output_tx: mpsc::Sender<String>,
     ) -> Self {
+        Self::with_profile(config, working_dir, output_tx, None)
+    }
+
+    pub fn with_profile(
+        config: HermesConfig,
+        working_dir: PathBuf,
+        output_tx: mpsc::Sender<String>,
+        profile: Option<String>,
+    ) -> Self {
         Self {
             config,
             working_dir,
@@ -52,19 +58,24 @@ impl HermesPromptSession {
             state: Arc::new(Mutex::new(PromptState::Idle)),
             current_task: None,
             resolved_binary: None,
+            profile,
         }
     }
 
-    /// Resolve the hermes binary path so we don't depend on the daemon's
-    /// `$PATH` matching the user's interactive shell. Order:
-    ///   1. `config.binary` as-is (if absolute and exists, or on $PATH).
-    ///   2. `which::which(config.binary)`.
-    ///   3. Known hermes install locations under the daemon user's home.
+    /// Resolve the hermes binary once at session-creation time so per-message
+    /// spawns don't re-probe the filesystem. See `hermes::resolve_binary`.
     pub async fn start(&mut self) -> Result<()> {
-        let resolved = resolve_hermes_binary(&self.config.binary);
-        match &resolved {
-            Some(p) => tracing::info!("Hermes prompt session ready (binary: {})", p.display()),
-            None => tracing::warn!(
+        let resolved = resolve_binary(&self.config.binary);
+        match (&resolved, &self.profile) {
+            (Some(p), Some(profile)) => tracing::info!(
+                "Hermes prompt session ready (binary: {}, profile: {})",
+                p.display(),
+                profile
+            ),
+            (Some(p), None) => {
+                tracing::info!("Hermes prompt session ready (binary: {})", p.display())
+            }
+            (None, _) => tracing::warn!(
                 "Hermes binary '{}' not found at config path, on $PATH, or in known fallback locations. \
                  Set [hermes] binary = \"/absolute/path/to/hermes\" in config.toml.",
                 self.config.binary
@@ -97,14 +108,17 @@ impl HermesPromptSession {
             args.join(" ")
         );
 
-        let mut child = match Command::new(&binary)
+        let mut builder = Command::new(&binary);
+        builder
             .args(&args)
             .current_dir(&self.working_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null())
-            .spawn()
-        {
+            .stdin(std::process::Stdio::null());
+        if let Some(profile) = &self.profile {
+            builder.env("HERMES_PROFILE", profile);
+        }
+        let mut child = match builder.spawn() {
             Ok(child) => child,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 anyhow::bail!(
@@ -182,41 +196,6 @@ impl Drop for HermesPromptSession {
             handle.abort();
         }
     }
-}
-
-/// Locate the hermes binary using the same fallback chain as agent_mgmt
-/// detection. Returns `None` if none of the candidates exist on disk —
-/// callers should treat that as "binary missing" and surface a clear error.
-fn resolve_hermes_binary(configured: &str) -> Option<PathBuf> {
-    // 1. If config gives a path that already exists, use it.
-    let direct = Path::new(configured);
-    if direct.is_absolute() && direct.exists() {
-        return Some(direct.to_path_buf());
-    }
-
-    // 2. PATH lookup.
-    if let Ok(p) = which::which(configured) {
-        return Some(p);
-    }
-
-    // 3. Known hermes install locations under the daemon user's home.
-    for hint in HERMES_FALLBACK_PATHS {
-        let expanded = expand_home(hint);
-        if expanded.exists() {
-            return Some(expanded);
-        }
-    }
-
-    None
-}
-
-fn expand_home(s: &str) -> PathBuf {
-    if let Some(stripped) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
-        }
-    }
-    PathBuf::from(s)
 }
 
 async fn read_stream<R: tokio::io::AsyncRead + Unpin>(reader: R, tx: mpsc::Sender<String>) {

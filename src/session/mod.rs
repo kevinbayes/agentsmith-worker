@@ -86,6 +86,17 @@ pub struct SessionInfo {
     pub id: SessionId,
     pub tool: SessionTool,
     pub status: SessionStatus,
+    /// Profile pinned to this session, when applicable (currently only set
+    /// for Hermes sessions launched with a profile selection).
+    pub profile: Option<String>,
+}
+
+/// Optional knobs for `SessionManager::create_session_with_options`.
+#[derive(Debug, Default, Clone)]
+pub struct SessionCreateOptions {
+    /// Pin the session to a specific upstream profile. For Hermes this maps
+    /// to the `HERMES_PROFILE` env var; ignored for other tools.
+    pub profile: Option<String>,
 }
 
 /// Internal representation of a running session.
@@ -101,6 +112,9 @@ struct SessionEntry {
     inner: SessionInner,
     tool: SessionTool,
     status: SessionStatus,
+    /// Profile this session was created with (only meaningful for tools
+    /// that support profile pinning, e.g. Hermes).
+    profile: Option<String>,
     /// Sends text chunks from the session output buffer to the router.
     chunk_rx: mpsc::Receiver<String>,
 }
@@ -150,6 +164,18 @@ impl SessionManager {
         tool: SessionTool,
         thread: &ThreadId,
     ) -> Result<SessionId> {
+        self.create_session_with_options(tool, thread, SessionCreateOptions::default())
+            .await
+    }
+
+    /// Like `create_session`, but lets the caller pin a profile (or any
+    /// future per-session option) at construction time.
+    pub async fn create_session_with_options(
+        &mut self,
+        tool: SessionTool,
+        thread: &ThreadId,
+        opts: SessionCreateOptions,
+    ) -> Result<SessionId> {
         let max = self.config.session_defaults.max_sessions;
         if self.sessions.len() >= max {
             anyhow::bail!("Maximum sessions ({}) reached. Stop a session first.", max);
@@ -191,11 +217,13 @@ impl SessionManager {
             }
             SessionTool::Hermes => {
                 // Hermes is one-shot per query via `hermes chat -q "..."`,
-                // no PTY, no interaction agent.
-                let mut session = HermesPromptSession::new(
+                // no PTY, no interaction agent. Pin the profile via env if
+                // the caller selected one.
+                let mut session = HermesPromptSession::with_profile(
                     self.config.hermes.clone(),
                     working_dir,
                     raw_output_tx,
+                    opts.profile.clone(),
                 );
                 session.start().await?;
                 SessionInner::HermesPrompt(session)
@@ -225,6 +253,7 @@ impl SessionManager {
             inner,
             tool,
             status: SessionStatus::Idle,
+            profile: opts.profile,
             chunk_rx,
         };
 
@@ -342,6 +371,7 @@ impl SessionManager {
                 id,
                 tool: entry.tool,
                 status: entry.status,
+                profile: entry.profile.clone(),
             })
             .collect()
     }

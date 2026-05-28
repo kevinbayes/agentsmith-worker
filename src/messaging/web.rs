@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_mgmt::api::{agent_routes, AgentApiState};
 use crate::agent_mgmt::Manager as AgentMgmtManager;
 use crate::config::WebConfig;
+use crate::hermes;
 use crate::messaging::{IncomingMessage, OutgoingMessage, Platform, ThreadId};
 use crate::scheduler::Scheduler;
 use crate::scheduler::api::{ScheduleApiState, schedule_routes};
@@ -32,6 +33,11 @@ pub struct SessionSnapshotItem {
     pub id: u64,
     pub tool: String,
     pub status: String,
+    /// Profile pinned to this session (e.g. a Hermes profile name).
+    /// `None` for tools that don't use profiles or sessions started
+    /// without explicit profile selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +64,7 @@ struct AppState {
     incoming_tx: mpsc::Sender<IncomingMessage>,
     connections: Arc<RwLock<HashMap<String, mpsc::Sender<String>>>>,
     status_snapshot: Arc<RwLock<StatusSnapshot>>,
+    hermes_binary: String,
 }
 
 /// Web messaging adapter providing a browser-based chat UI and status dashboard.
@@ -66,6 +73,9 @@ pub struct WebAdapter {
     status_snapshot: Arc<RwLock<StatusSnapshot>>,
     scheduler: Option<Arc<RwLock<Scheduler>>>,
     agent_mgmt: Option<Arc<AgentMgmtManager>>,
+    /// Configured hermes binary string (resolved at request time so a
+    /// post-install Hermes is picked up without a restart).
+    hermes_binary: String,
 }
 
 impl WebAdapter {
@@ -74,12 +84,14 @@ impl WebAdapter {
         status_snapshot: Arc<RwLock<StatusSnapshot>>,
         scheduler: Option<Arc<RwLock<Scheduler>>>,
         agent_mgmt: Option<Arc<AgentMgmtManager>>,
+        hermes_binary: String,
     ) -> Self {
         Self {
             config,
             status_snapshot,
             scheduler,
             agent_mgmt,
+            hermes_binary,
         }
     }
 
@@ -102,12 +114,14 @@ impl WebAdapter {
             incoming_tx,
             connections: connections.clone(),
             status_snapshot: self.status_snapshot,
+            hermes_binary: self.hermes_binary,
         };
 
         let mut app = Router::new()
             .route("/", get(index_handler))
             .route("/ws", get(ws_handler))
             .route("/api/status", get(status_handler))
+            .route("/api/hermes/profiles", get(hermes_profiles_handler))
             .with_state(state);
 
         // Add schedule API routes if scheduler is available
@@ -175,6 +189,34 @@ async fn index_handler() -> Html<&'static str> {
 async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     let snap = state.status_snapshot.read().await;
     Json(snap.clone())
+}
+
+/// List Hermes profiles. 503 if the hermes binary can't be resolved on the
+/// host (Hermes not installed, or path misconfigured).
+async fn hermes_profiles_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let binary = match hermes::resolve_binary(&state.hermes_binary) {
+        Some(b) => b,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "hermes binary not found",
+                    "configured": state.hermes_binary,
+                })),
+            );
+        }
+    };
+
+    match hermes::list_profiles(&binary).await {
+        Ok(profiles) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(&profiles).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{:#}", e)})),
+        ),
+    }
 }
 
 async fn ws_handler(

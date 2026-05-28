@@ -1,8 +1,13 @@
 /// Parsed user command.
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Create a new AI session: /new claude, /new hermes, /new zeroclaw
-    New { tool: String },
+    /// Create a new AI session: /new claude, /new hermes, /new zeroclaw.
+    /// `profile` is an optional third token used by Hermes to pin
+    /// `HERMES_PROFILE` for the new session.
+    New {
+        tool: String,
+        profile: Option<String>,
+    },
     /// List all sessions: /list
     List,
     /// Switch active session: /switch <id>
@@ -97,7 +102,13 @@ pub fn parse_command(input: &str) -> Command {
                 .get(1)
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "claude".to_string());
-            Command::New { tool }
+            // Third token is an optional profile name (e.g. `/new hermes default`).
+            // Keep the original casing — profile names are case-sensitive in Hermes.
+            let profile = parts
+                .get(2)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            Command::New { tool, profile }
         }
         "/list" => Command::List,
         "/switch" => {

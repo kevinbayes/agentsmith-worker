@@ -158,6 +158,7 @@ impl Router {
                                 id: s.id,
                                 tool: s.tool.to_string(),
                                 status: s.status.to_string(),
+                                profile: s.profile.clone(),
                             })
                             .collect();
                         snap.agents = tools
@@ -226,8 +227,8 @@ impl Router {
                 self.handle_clear(&thread).await;
             }
             // Existing slash commands work in both modes
-            Command::New { tool } => {
-                self.handle_new_session(&thread, &tool).await;
+            Command::New { tool, profile } => {
+                self.handle_new_session(&thread, &tool, profile).await;
             }
             Command::List => {
                 self.handle_list(&thread).await;
@@ -353,7 +354,12 @@ impl Router {
         }
     }
 
-    async fn handle_new_session(&mut self, thread: &ThreadId, tool_name: &str) {
+    async fn handle_new_session(
+        &mut self,
+        thread: &ThreadId,
+        tool_name: &str,
+        profile: Option<String>,
+    ) {
         let tool = match SessionTool::from_str(tool_name) {
             Some(t) => t,
             None => {
@@ -369,11 +375,25 @@ impl Router {
             }
         };
 
-        match self.session_mgr.create_session(tool, thread).await {
+        let opts = crate::session::SessionCreateOptions {
+            profile: profile.clone(),
+        };
+        match self
+            .session_mgr
+            .create_session_with_options(tool, thread, opts)
+            .await
+        {
             Ok(id) => {
+                let suffix = profile
+                    .as_ref()
+                    .map(|p| format!(" (profile: {})", p))
+                    .unwrap_or_default();
                 self.send_reply(
                     thread,
-                    &format!("Created {} session #{}. It is now your active session.", tool, id),
+                    &format!(
+                        "Created {} session #{}{}. It is now your active session.",
+                        tool, id, suffix
+                    ),
                 )
                 .await;
             }
